@@ -17,7 +17,7 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
-    private final AdminAuthFilter adminAuthFilter;
+    private final AdminAuthFilter adminAuthFilter; 
 
     public SecurityConfig(JwtAuthFilter jwtAuthFilter,
                           AdminAuthFilter adminAuthFilter) {
@@ -31,17 +31,14 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain filterChain(
-            HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
             .csrf(AbstractHttpConfigurer::disable)
-            .httpBasic(AbstractHttpConfigurer::disable) 
-            .formLogin(AbstractHttpConfigurer::disable) 
-            .cors(cors -> cors.configurationSource(
-                corsConfigurationSource()))
+            .httpBasic(AbstractHttpConfigurer::disable)
+            .formLogin(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session
-                .sessionCreationPolicy(
-                    SessionCreationPolicy.STATELESS))
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(
                     "/api/passenger/auth/register",
@@ -51,11 +48,17 @@ public class SecurityConfig {
                     "/api/passenger/topup/webhook",
                     "/api/admin/auth/**",
                     "/api/driver/login",
-                    "/api/driver/setup"
+                    "/api/driver/setup",                    
+                    "/api/driver/buses",
+                    "/api/driver/bus-alerts",
+                    "/api/driver/vehicles",
+                    "/api/driver/drivers",
+                    "/api/driver/alerts"
+                    
                 ).permitAll()
                 .anyRequest().authenticated())
-            .addFilterBefore(jwtAuthFilter,
-                UsernamePasswordAuthenticationFilter.class);
+            .addFilterBefore(adminAuthFilter, UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(jwtAuthFilter, AdminAuthFilter.class);
 
         return http.build();
     }
@@ -66,17 +69,16 @@ public class SecurityConfig {
         config.setAllowedOrigins(List.of(
             "http://localhost:3000",
             "http://localhost:5173",
+            "http://localhost:5174",  // ✅ Your Vite port
             "http://localhost:3001",
             "http://localhost:3002"
         ));
         config.setAllowedMethods(List.of(
-            "GET", "POST", "PUT",
-            "DELETE", "OPTIONS", "PATCH"));
+            "GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
 
-        UrlBasedCorsConfigurationSource source =
-            new UrlBasedCorsConfigurationSource();
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;
     }
