@@ -19,7 +19,7 @@ public interface TopUpRequestRepository
 
     // webhook
     Optional<TopUpRequest> findByPaymongoPaymentIntentId(
-        String paymentIntentId);
+    		String paymentIntentId);
 
     // Get passenger top-up history
     List<TopUpRequest> findByPassengerIdOrderByCreatedAtDesc(
@@ -28,4 +28,5 @@ public interface TopUpRequestRepository
     // Check pending payments
     List<TopUpRequest> findByPassengerIdAndStatus(
         Long passengerId, TransactionStatus status);
+    
 }

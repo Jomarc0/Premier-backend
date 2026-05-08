@@ -1,6 +1,7 @@
 package com.premier.config;
 
 import com.premier.admin.security.AdminAuthFilter;
+import com.premier.driver.security.DriverJwtAuthFilter;
 import com.premier.security.JwtAuthFilter;
 import org.springframework.context.annotation.*;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -16,13 +17,16 @@ import java.util.List;
 @Configuration
 public class SecurityConfig {
 
-    private final JwtAuthFilter jwtAuthFilter;
-    private final AdminAuthFilter adminAuthFilter; 
+    private final JwtAuthFilter       jwtAuthFilter;
+    private final AdminAuthFilter     adminAuthFilter;
+    private final DriverJwtAuthFilter driverJwtAuthFilter;
 
     public SecurityConfig(JwtAuthFilter jwtAuthFilter,
-                          AdminAuthFilter adminAuthFilter) {
-        this.jwtAuthFilter = jwtAuthFilter;
-        this.adminAuthFilter = adminAuthFilter;
+                          AdminAuthFilter adminAuthFilter,
+                          DriverJwtAuthFilter driverJwtAuthFilter) {
+        this.jwtAuthFilter       = jwtAuthFilter;
+        this.adminAuthFilter     = adminAuthFilter;
+        this.driverJwtAuthFilter = driverJwtAuthFilter;
     }
 
     @Bean
@@ -31,34 +35,52 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http)
+            throws Exception {
         http
             .csrf(AbstractHttpConfigurer::disable)
             .httpBasic(AbstractHttpConfigurer::disable)
             .formLogin(AbstractHttpConfigurer::disable)
-            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .cors(cors -> cors.configurationSource(
+                corsConfigurationSource()))
             .sessionManagement(session -> session
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .sessionCreationPolicy(
+                    SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(
+                    // Passenger public
                     "/api/passenger/auth/register",
                     "/api/passenger/auth/login",
                     "/api/passenger/auth/verify-totp",
                     "/api/passenger/auth/totp/setup",
                     "/api/passenger/topup/webhook",
+                    // Admin public
                     "/api/admin/auth/**",
+                    "/api/admin/auth/generate-hash",
+                    // Driver public
                     "/api/driver/login",
-                    "/api/driver/setup",                    
                     "/api/driver/buses",
                     "/api/driver/bus-alerts",
                     "/api/driver/vehicles",
                     "/api/driver/drivers",
-                    "/api/driver/alerts"
-                    
+                    "/api/driver/alerts",
+                    "/api/driver/gps",
+                    "/api/driver/emergency/**",
+                    // WebSocket
+                    "/ws/**",
+                    //GPS
+                    "/api/driver/location",          
+                    "/api/driver/live-locations",     
+                    "/api/driver/shift-history/**"
                 ).permitAll()
-                .anyRequest().authenticated())
-            .addFilterBefore(adminAuthFilter, UsernamePasswordAuthenticationFilter.class)
-            .addFilterBefore(jwtAuthFilter, AdminAuthFilter.class);
+                .anyRequest().authenticated()
+            )
+            .addFilterBefore(adminAuthFilter,
+                UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(driverJwtAuthFilter,
+                AdminAuthFilter.class)
+            .addFilterBefore(jwtAuthFilter,
+                DriverJwtAuthFilter.class);
 
         return http.build();
     }
@@ -69,16 +91,18 @@ public class SecurityConfig {
         config.setAllowedOrigins(List.of(
             "http://localhost:3000",
             "http://localhost:5173",
-            "http://localhost:5174",  // ✅ Your Vite port
+            "http://localhost:5174",
+            "http://localhost:5175",
             "http://localhost:3001",
             "http://localhost:3002"
         ));
         config.setAllowedMethods(List.of(
-            "GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
+            "GET", "POST", "PUT",
+            "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        UrlBasedCorsConfigurationSource source =
+            new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;
     }

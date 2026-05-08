@@ -22,7 +22,6 @@ public class AuthService {
     private final TotpService totpService;
 
     //REGISTER 
-
     @Transactional
     public ApiResponse<PassengerResponse> register(
             RegisterRequest request) {
