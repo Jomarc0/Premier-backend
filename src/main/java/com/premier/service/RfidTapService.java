@@ -26,29 +26,25 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class RfidTapService {
 
-    // ── Fixed fare ─────────────────────────────────────────────────────────────
+    // Fixed fare 
     private static final BigDecimal FIXED_FARE       = new BigDecimal("60.00");
     private static final long       COOLDOWN_SECONDS = 3L;
 
-    // ── Repositories ───────────────────────────────────────────────────────────
+    // Repositories
     private final PassengerRepository   passengerRepository;
     private final TransactionRepository transactionRepository;
 
-    /**
-     * In-memory rapid-tap cooldown guard.
-     * Maps rfidUid → timestamp of last accepted tap.
-     * Resets on server restart — acceptable for simulation purposes.
-     */
+
     private final Map<String, LocalDateTime> cooldownMap = new ConcurrentHashMap<>();
 
-    // ── Public API ─────────────────────────────────────────────────────────────
+    // Public API 
 
     @Transactional
     public ApiResponse<RfidTapResponse> processTap(RfidTapRequest request) {
 
         String rfidUid = request.getRfidUid().trim().toUpperCase();
 
-        // 1. Find passenger by RFID UID
+        // Find passenger by RFID UID
         Passenger passenger = passengerRepository
                 .findByRfidUid(rfidUid)
                 .orElse(null);
@@ -58,7 +54,7 @@ public class RfidTapService {
             return ApiResponse.error("Card not found. Please register your RFID card.");
         }
 
-        // 2. Validate card status
+        // Validate card status
         if (passenger.getStatus() == PassengerStatus.BLOCKED) {
             log.warn("RFID tap: card blocked [uid={}]", rfidUid);
             return ApiResponse.error("Your card is blocked. Please contact support.");
@@ -70,7 +66,7 @@ public class RfidTapService {
             return ApiResponse.error("Your card is not active. Please contact support.");
         }
 
-        // 3. Cooldown protection — prevent rapid duplicate taps (3-second window)
+        // Cooldown protection — prevent rapid duplicate taps (3-second window)
         LocalDateTime lastTap = cooldownMap.get(rfidUid);
         if (lastTap != null &&
                 lastTap.plusSeconds(COOLDOWN_SECONDS).isAfter(LocalDateTime.now())) {
@@ -78,7 +74,7 @@ public class RfidTapService {
             return ApiResponse.error("Tap too fast. Please wait a moment and try again.");
         }
 
-        // 4. Check balance
+        // Check balance
         BigDecimal balanceBefore = passenger.getBalance();
         if (balanceBefore.compareTo(FIXED_FARE) < 0) {
             log.info("RFID tap: insufficient balance [uid={}, balance={}]",
@@ -88,15 +84,15 @@ public class RfidTapService {
                             balanceBefore, FIXED_FARE));
         }
 
-        // 5. Deduct fare
+        // Deduct fare
         BigDecimal balanceAfter = balanceBefore.subtract(FIXED_FARE);
         passenger.setBalance(balanceAfter);
         passengerRepository.save(passenger);
 
-        // 6. Register cooldown timestamp AFTER successful deduction
+        // Register cooldown timestamp AFTER successful deduction
         cooldownMap.put(rfidUid, LocalDateTime.now());
 
-        // 7. Save transaction record
+        // Save transaction record
         String refNumber = "RFID-" +
                 UUID.randomUUID()
                     .toString()
@@ -119,7 +115,7 @@ public class RfidTapService {
 
         transactionRepository.save(transaction);
 
-        // 8. Build and return response
+        // Build and return response
         RfidTapResponse data = RfidTapResponse.builder()
                 .cardNumber(passenger.getCardNumber())
                 .rfidUid(rfidUid)

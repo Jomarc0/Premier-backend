@@ -41,12 +41,12 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .httpBasic(AbstractHttpConfigurer::disable)
             .formLogin(AbstractHttpConfigurer::disable)
-            .cors(cors -> cors.configurationSource(
-                corsConfigurationSource()))
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session
-                .sessionCreationPolicy(
-                    SessionCreationPolicy.STATELESS))
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+
+                // Public endpoints 
                 .requestMatchers(
                     // Passenger public
                     "/api/passenger/auth/register",
@@ -68,11 +68,27 @@ public class SecurityConfig {
                     "/api/driver/emergency/**",
                     // WebSocket
                     "/ws/**",
-                    //GPS
-                    "/api/driver/location",          
-                    "/api/driver/live-locations",     
-                    "/api/driver/shift-history/**"
+                    // GPS
+                    "/api/driver/location",
+                    "/api/driver/live-locations",
+                    "/api/driver/shift-history/**",
+                    // RFID Terminal
+                    "/api/rfid/**"
                 ).permitAll()
+
+                .requestMatchers(
+                    "/api/admin/logs",
+                    "/api/admin/logs/**",
+                    "/api/admin/logs/stats",
+                    "/api/admin/manage-admins",
+                    "/api/admin/manage-admins/**"
+                ).hasAuthority("SUPER_ADMIN")
+
+                // General admin endpoints 
+                .requestMatchers("/api/admin/**")
+                    .hasAnyAuthority("ADMIN", "SUPER_ADMIN")
+
+                // Everything else requires authentication
                 .anyRequest().authenticated()
             )
             .addFilterBefore(adminAuthFilter,
@@ -93,6 +109,7 @@ public class SecurityConfig {
             "http://localhost:5173",
             "http://localhost:5174",
             "http://localhost:5175",
+            "http://localhost:5176",
             "http://localhost:3001",
             "http://localhost:3002"
         ));
