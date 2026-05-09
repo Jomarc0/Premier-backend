@@ -1,6 +1,5 @@
 package com.premier.config;
 
-import com.premier.admin.security.AdminAuthFilter;
 import com.premier.security.JwtAuthFilter;
 import org.springframework.context.annotation.*;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -17,12 +16,9 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
-    private final AdminAuthFilter adminAuthFilter;
 
-    public SecurityConfig(JwtAuthFilter jwtAuthFilter,
-                          AdminAuthFilter adminAuthFilter) {
+    public SecurityConfig(JwtAuthFilter jwtAuthFilter) {
         this.jwtAuthFilter = jwtAuthFilter;
-        this.adminAuthFilter = adminAuthFilter;
     }
 
     @Bean
