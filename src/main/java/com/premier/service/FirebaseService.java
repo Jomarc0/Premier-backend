@@ -19,7 +19,6 @@ public class FirebaseService {
     private final PassengerRepository passengerRepository;
 
     //  SINGLE NOTIFICATION 
-
     public void sendNotification(
             String fcmToken,
             String title,

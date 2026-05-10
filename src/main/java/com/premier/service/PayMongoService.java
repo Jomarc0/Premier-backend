@@ -47,8 +47,7 @@ public class PayMongoService {
         // PayMongo amount is in centavos
         long amountInCentavos = dto.getAmount()
                 .multiply(BigDecimal.valueOf(100)).longValue();
-
-
+        
         Map<String, Object> attributes = new HashMap<>();
         attributes.put("amount", amountInCentavos);
         attributes.put("currency", "PHP");
