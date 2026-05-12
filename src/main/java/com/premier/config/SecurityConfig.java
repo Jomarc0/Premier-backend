@@ -41,12 +41,14 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .httpBasic(AbstractHttpConfigurer::disable)
             .formLogin(AbstractHttpConfigurer::disable)
-            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .cors(cors -> cors.configurationSource(
+                corsConfigurationSource()))
             .sessionManagement(session -> session
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .sessionCreationPolicy(
+                    SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
 
-                // Public endpoints 
+                //Public endpoints
                 .requestMatchers(
                     // Passenger public
                     "/api/passenger/auth/register",
@@ -73,9 +75,15 @@ public class SecurityConfig {
                     "/api/driver/live-locations",
                     "/api/driver/shift-history/**",
                     // RFID Terminal
-                    "/api/rfid/**"
+                    "/api/rfid/**",
+                    "/api/auth/**"
                 ).permitAll()
 
+                // Chatbot 
+                .requestMatchers("/api/passenger/chat/**")
+                .authenticated()              
+
+                //Super Admin only 
                 .requestMatchers(
                     "/api/admin/logs",
                     "/api/admin/logs/**",
@@ -84,11 +92,11 @@ public class SecurityConfig {
                     "/api/admin/manage-admins/**"
                 ).hasAuthority("SUPER_ADMIN")
 
-                // General admin endpoints 
+                // General admin
                 .requestMatchers("/api/admin/**")
                     .hasAnyAuthority("ADMIN", "SUPER_ADMIN")
 
-                // Everything else requires authentication
+                //Everything else requires auth 
                 .anyRequest().authenticated()
             )
             .addFilterBefore(adminAuthFilter,
