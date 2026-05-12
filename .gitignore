@@ -1,0 +1,60 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+
+# Maven / Spring Boot
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+.env
+*.env
+
+# Firebase 
+src/main/resources/firebase-service-account.json
+
+# Dialogflow
+src/main/resources/dialoglow/service-account.json
+
+# Eclipse
+
+.classpath
+.project
+.settings/
+.apt_generated
+.springBeans
+.sts4-cache
+
+
+# IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+
+# VS Code
+.vscode/
+
+# Logs / OS files
+*.log
+.DS_Store
+Thumbs.db
+
+# Optional: production secrets
+application-secret.properties
