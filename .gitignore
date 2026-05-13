@@ -21,7 +21,7 @@ build/
 src/main/resources/firebase-service-account.json
 
 # Dialogflow
-src/main/resources/dialogflow/service-account.json
+src/main/resources/dialogflow-service-account.json
 
 # Eclipse
 .factorypath
