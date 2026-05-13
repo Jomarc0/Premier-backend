@@ -56,6 +56,8 @@ public class SecurityConfig {
                     "/api/passenger/auth/verify-totp",
                     "/api/passenger/auth/totp/setup",
                     "/api/passenger/topup/webhook",
+                    "/api/passenger/topup/check-paid",  
+                    "/api/passenger/topup/check-paid/**",
                     // Admin public
                     "/api/admin/auth/**",
                     "/api/admin/auth/generate-hash",

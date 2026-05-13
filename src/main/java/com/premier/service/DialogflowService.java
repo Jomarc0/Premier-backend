@@ -6,14 +6,16 @@ import com.google.cloud.dialogflow.v2.*;
 import com.premier.response.ChatResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ResourceLoader;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
+
+import jakarta.annotation.PostConstruct;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
-import jakarta.annotation.PostConstruct;
-import java.io.InputStream;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -28,35 +30,39 @@ public class DialogflowService {
     @Value("${dialogflow.credentials-path:classpath:dialogflow/service-account.json}")
     private String credentialsPath;
 
-    private final ResourceLoader resourceLoader;
     private SessionsClient sessionsClient;
-
-    public DialogflowService(ResourceLoader resourceLoader) {
-        this.resourceLoader = resourceLoader;
-    }
 
     @PostConstruct
     public void init() {
         try {
-            InputStream credStream = resourceLoader
-                    .getResource(credentialsPath)
-                    .getInputStream();
-
+            //Works for local classpath AND Render /app/ files
+            InputStream credStream = getCredentialsStream();
+            
             GoogleCredentials credentials = GoogleCredentials
-                    .fromStream(credStream)
-                    .createScoped("https://www.googleapis.com/auth/cloud-platform");
+                .fromStream(credStream)
+                .createScoped("https://www.googleapis.com/auth/cloud-platform");
 
             SessionsSettings settings = SessionsSettings.newBuilder()
-                    .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
-                    .build();
+                .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
+                .build();
 
             this.sessionsClient = SessionsClient.create(settings);
-            log.info("✅ Dialogflow SessionsClient initialized. Project: {}", projectId);
+            log.info("Dialogflow initialized. Project: {}", projectId);
 
         } catch (Exception e) {
-            log.error("❌ Failed to initialize Dialogflow client: {}", e.getMessage(), e);
-            // Startup continues — fallback responses will be used
+            log.error("Dialogflow init failed: {}", e.getMessage(), e);
         }
+    }
+
+
+    private InputStream getCredentialsStream() throws IOException {
+        if (credentialsPath.startsWith("classpath:")) {
+            // Local dev: src/main/resources/dialogflow/service-account.json
+            String file = credentialsPath.replace("classpath:", "");
+            return new ClassPathResource(file).getInputStream();
+        } 
+        // Render: /app/dialogflow/service-account.json
+        return new FileInputStream(credentialsPath);
     }
 
     public ChatResponse detectIntent(String userMessage, String sessionId) {
@@ -88,7 +94,7 @@ public class DialogflowService {
             String intentName = result.getIntent().getDisplayName();
             float confidence = result.getIntentDetectionConfidence();
 
-         // reads from Custom Payload:
+            // QUICK REPLIES FROM CUSTOM PAYLOAD 
             List<String> quickReplies = new ArrayList<>();
             for (Intent.Message msg : result.getFulfillmentMessagesList()) {
                 if (msg.hasPayload()) {
@@ -108,10 +114,11 @@ public class DialogflowService {
                     }
                 }
             }
+
             log.info("Dialogflow → Intent: [{}] | Confidence: {:.2f} | Session: {}",
                     intentName, confidence, resolvedSession);
 
-            // Use fallback text if Dialogflow returned empty fulfillment
+            // Fallback if empty response
             if (replyText == null || replyText.isBlank()) {
                 replyText = "I'm not sure how to help with that. Please contact support at (123) 456-7890.";
             }

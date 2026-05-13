@@ -76,10 +76,10 @@ public class FirebaseService {
             String response = FirebaseMessaging.getInstance()
                 .send(messageBuilder.build());
 
-            log.info("✅ Notification sent: {}", response);
+            log.info("Notification sent: {}", response);
 
         } catch (FirebaseMessagingException e) {
-            log.error("❌ FCM send failed: {}",
+            log.error("FCM send failed: {}",
                 e.getMessage());
         }
     }
@@ -112,7 +112,7 @@ public class FirebaseService {
                 .getInstance()
                 .sendEachForMulticast(message);
 
-            log.info("✅ Multicast: {}/{} sent",
+            log.info("Multicast: {}/{} sent",
                 response.getSuccessCount(),
                 tokens.size());
 
@@ -130,7 +130,7 @@ public class FirebaseService {
             String newBalance) {
         sendNotification(
             fcmToken,
-            "Top-up Successful! 💳",
+            "Top-up Successful!",
             "₱" + amount + " added. " +
             "New balance: ₱" + newBalance,
             Map.of(
