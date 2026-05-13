@@ -13,4 +13,4 @@ RUN ./mvnw clean package -DskipTests
 
 EXPOSE 8080
 
-CMD ["java", "-Xmx256m", "-jar", "target/*.jar"]
+CMD ["java", "-Xmx256m", "-jar", "target/premier-0.0.1-SNAPSHOT.jar"]
