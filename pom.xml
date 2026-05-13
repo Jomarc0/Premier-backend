@@ -212,19 +212,20 @@
 						</configuration>
 					</execution>
 					<execution>
-						<id>default-testCompile</id>
-						<phase>test-compile</phase>
-						<goals>
-							<goal>testCompile</goal>
-						</goals>
-						<configuration>
-							<annotationProcessorPaths>
-								<path>
-									<groupId>org.projectlombok</groupId>
-									<artifactId>lombok</artifactId>
-								</path>
-							</annotationProcessorPaths>
-						</configuration>
+					    <id>default-testCompile</id>
+					    <phase>test-compile</phase>
+					    <goals>
+					        <goal>testCompile</goal>
+					    </goals>
+					    <configuration>
+					        <annotationProcessorPaths>
+					            <path>
+					                <groupId>org.projectlombok</groupId>
+					                <artifactId>lombok</artifactId>
+					                <version>1.18.30</version>
+					            </path>
+					        </annotationProcessorPaths>
+					    </configuration>
 					</execution>
 				</executions>
 			</plugin>
