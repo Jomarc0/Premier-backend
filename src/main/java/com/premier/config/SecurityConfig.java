@@ -123,7 +123,10 @@ public class SecurityConfig {
             "http://localhost:3001",
             "http://localhost:3002",
             //vercel
-            "https://premierusers.vercel.app"
+            "https://premierusers.vercel.app",
+            "https://premierrfid.vercel.app",
+            "https://premierdriver.vercel.app",
+            "https://premieradmin.vercel.app"
         ));
         config.setAllowedMethods(List.of(
             "GET", "POST", "PUT",
