@@ -78,7 +78,9 @@ public class SecurityConfig {
                     "/api/driver/shift-history/**",
                     // RFID Terminal
                     "/api/rfid/**",
-                    "/api/auth/**"
+                    "/api/auth/**",
+                    "/health",
+                    "/actuator/health"
                 ).permitAll()
 
                 // Chatbot 
