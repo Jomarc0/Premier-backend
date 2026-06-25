@@ -39,6 +39,7 @@ public class PayMongoService {
     @Transactional
     public ApiResponse<TopUpResponse> initiateTopUp(
             Passenger passenger, TopUpRequestDto dto) {
+        String paymentMethod = normalizePaymentMethod(dto.getPaymentMethod());
 
         String referenceNumber = "PMR-" +
             UUID.randomUUID().toString()
@@ -52,9 +53,9 @@ public class PayMongoService {
         attributes.put("amount", amountInCentavos);
         attributes.put("currency", "PHP");
         attributes.put("description",
-                "Premier Transit Top-Up - " + referenceNumber);
+                "Premier Transit Top-Up via " + paymentMethod + " - " + referenceNumber);
         attributes.put("remarks",
-                "Passenger ID: " + passenger.getId());  
+                "Passenger ID: " + passenger.getId() + " | Payment Method: " + paymentMethod);
 
         Map<String, Object> data = new HashMap<>();
         data.put("attributes", attributes);
@@ -109,6 +110,18 @@ public class PayMongoService {
             throw new RuntimeException(
                     "Payment initiation failed: " + e.getMessage());
         }
+    }
+
+    private String normalizePaymentMethod(String paymentMethod) {
+        if (paymentMethod == null || paymentMethod.isBlank()) {
+            return "GCASH";
+        }
+
+        String normalized = paymentMethod.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "MAYA" -> "MAYA";
+            default -> "GCASH";
+        };
     }
 
     //WEBHOOK HANDLER 

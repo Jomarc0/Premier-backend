@@ -33,6 +33,7 @@ public class AdminAuthFilter extends OncePerRequestFilter {
         return path.equals("/api/admin/auth/login")  ||
                path.startsWith("/api/admin/auth/")   ||
                path.startsWith("/api/passenger/")    ||
+               path.startsWith("/api/staff/")        ||
                path.equals("/api/rfid/tap")          ||
                path.startsWith("/api/driver/");
     }

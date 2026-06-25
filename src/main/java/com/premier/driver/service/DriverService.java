@@ -447,14 +447,14 @@ public class DriverService {
                 vehicle.getRoute().toUpperCase().contains("LIPA")) {
 
                 // SM Lipa fallback
-                bus.put("latitude", lat != null ? lat : 13.9411);
-                bus.put("longitude", lng != null ? lng : 121.1631);
+                bus.put("latitude", lat != null ? lat : 13.954781);
+                bus.put("longitude", lng != null ? lng : 121.163096);
 
             } else {
 
-                // SM Batangas fallback
-                bus.put("latitude", lat != null ? lat : 13.7565);
-                bus.put("longitude", lng != null ? lng : 121.0583);
+                // Grand Terminal fallback
+                bus.put("latitude", lat != null ? lat : 13.790391);
+                bus.put("longitude", lng != null ? lng : 121.062721);
             }
 
             bus.put("status", vehicle.getStatus().name());

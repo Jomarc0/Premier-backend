@@ -32,6 +32,7 @@ public class DriverJwtAuthFilter extends OncePerRequestFilter {
                path.equals("/api/driver/vehicles")   ||
                path.equals("/api/driver/drivers")    ||
                path.equals("/api/driver/alerts")     ||
+               path.startsWith("/api/staff/")        ||
                path.startsWith("/ws")				 ||
                path.equals("/api/rfid/tap"); 
     }

@@ -38,6 +38,14 @@ public class Admin {
     @Column(nullable = false, length = 255)
     private String password;
 
+    @Column(name = "is_2fa_enabled", nullable = false)
+    @Builder.Default
+    private Boolean is2FaEnabled = false;
+
+    @JsonIgnore
+    @Column(name = "twofa_secret")
+    private String twofaSecret;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
     @Builder.Default

@@ -6,6 +6,7 @@ import com.premier.admin.security.AdminJwtUtil;
 import com.premier.model.*;
 import com.premier.repository.*;
 import com.premier.response.ApiResponse;
+import com.premier.response.TotpSetupResponse;
 import com.premier.service.TotpService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.*;
@@ -51,6 +52,7 @@ public class AdminService {
     public ApiResponse<Map<String, Object>> login(
             String username,
             String password,
+            String totpCode,
             String ipAddress) {
 
         Admin admin = adminRepository
@@ -80,6 +82,26 @@ public class AdminService {
             throw new RuntimeException("Invalid credentials.");
         }
 
+        if (!AdminRole.STAFF.equals(admin.getRole()) &&
+            Boolean.TRUE.equals(admin.getIs2FaEnabled())) {
+            if (totpCode == null || totpCode.isBlank()) {
+                Map<String, Object> challenge = new HashMap<>();
+                challenge.put("requiresTotp", true);
+                challenge.put("username", admin.getUsername());
+                challenge.put("fullName", admin.getFullName());
+                challenge.put("role", admin.getRole().name());
+                return ApiResponse.success(
+                    "Google Authenticator code required.",
+                    challenge);
+            }
+            if (admin.getTwofaSecret() == null ||
+                !totpService.verifyCode(
+                    admin.getTwofaSecret(), totpCode.trim())) {
+                throw new RuntimeException(
+                    "Invalid Google Authenticator code.");
+            }
+        }
+
         admin.setLoginAttempts(0);
         admin.setLockedUntil(null);
         admin.setLastLogin(LocalDateTime.now());
@@ -93,6 +115,7 @@ public class AdminService {
         data.put("fullName", admin.getFullName());
         data.put("username", admin.getUsername());
         data.put("role",     admin.getRole().name());
+        data.put("requiresTotp", false);
 
         logActivity(admin, "LOGIN", "ADMIN",
             admin.getId(),
@@ -100,6 +123,59 @@ public class AdminService {
             ipAddress);
 
         return ApiResponse.success("Login successful.", data);
+    }
+
+    public ApiResponse<TotpSetupResponse> getAdminTotpSetup(Admin admin) {
+        if (admin.getTwofaSecret() == null ||
+            admin.getTwofaSecret().isBlank()) {
+            admin.setTwofaSecret(totpService.generateSecret());
+            adminRepository.save(admin);
+        }
+
+        String qrCodeUrl = totpService.generateQrCodeUrl(
+            admin.getTwofaSecret(), admin.getUsername());
+
+        return ApiResponse.success(
+            "Scan QR code with Google Authenticator.",
+            TotpSetupResponse.builder()
+                .secret(admin.getTwofaSecret())
+                .manualEntryKey(admin.getTwofaSecret())
+                .qrCodeUrl(qrCodeUrl)
+                .is2FaEnabled(Boolean.TRUE.equals(
+                    admin.getIs2FaEnabled()))
+                .build());
+    }
+
+    @Transactional
+    public ApiResponse<Map<String, Object>> verifyAdminTotp(
+            Admin admin,
+            String code) {
+        if (admin.getTwofaSecret() == null ||
+            admin.getTwofaSecret().isBlank()) {
+            admin.setTwofaSecret(totpService.generateSecret());
+        }
+
+        if (code == null || code.isBlank() ||
+            !totpService.verifyCode(
+                admin.getTwofaSecret(), code.trim())) {
+            throw new RuntimeException(
+                "Invalid Google Authenticator code.");
+        }
+
+        admin.setIs2FaEnabled(true);
+        adminRepository.save(admin);
+
+        logActivity(admin, "ENABLE_ADMIN_2FA",
+            "ADMIN", admin.getId(),
+            "Enabled Google Authenticator security",
+            "localhost");
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("twoFactorEnabled", true);
+        result.put("username", admin.getUsername());
+
+        return ApiResponse.success(
+            "Google Authenticator enabled.", result);
     }
 
     //  DASHBOARD 
@@ -348,6 +424,8 @@ public class AdminService {
             .phoneNumber(phoneNumber)
             .role(role)
             .active(true)
+            .is2FaEnabled(false)
+            .twofaSecret(null)
             .build();
 
         adminRepository.save(newAdmin);

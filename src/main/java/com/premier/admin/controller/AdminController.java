@@ -3,6 +3,7 @@ package com.premier.admin.controller;
 import com.premier.admin.model.*;
 import com.premier.admin.repository.AdminRepository;
 import com.premier.admin.security.AdminJwtUtil;
+import com.premier.admin.service.AdminAnalyticsService;
 import com.premier.admin.service.AdminService;
 import com.premier.driver.model.Driver;
 import com.premier.driver.model.Vehicle;
@@ -16,6 +17,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -26,6 +28,7 @@ public class AdminController {
 
     private final AdminService       adminService;
     private final AdminJwtUtil       adminJwtUtil;
+    private final AdminAnalyticsService adminAnalyticsService;
     private final AdminRepository    adminRepository;
     private final DriverRepository   driverRepository;
     private final VehicleRepository  vehicleRepository;
@@ -77,7 +80,26 @@ public class AdminController {
         return ResponseEntity.ok(adminService.login(
             body.get("username"),
             body.get("password"),
+            body.get("totpCode"),
             request.getRemoteAddr()));
+    }
+
+    @GetMapping("/auth/totp/setup")
+    public ResponseEntity<?> adminTotpSetup(
+            HttpServletRequest request) {
+        Admin admin = getCurrentAdmin(request);
+        return ResponseEntity.ok(
+            adminService.getAdminTotpSetup(admin));
+    }
+
+    @PostMapping("/auth/totp/verify")
+    public ResponseEntity<?> adminTotpVerify(
+            HttpServletRequest request,
+            @RequestBody Map<String, String> body) {
+        Admin admin = getCurrentAdmin(request);
+        return ResponseEntity.ok(
+            adminService.verifyAdminTotp(
+                admin, body.get("totpCode")));
     }
 
     // DASHBOARD 
@@ -88,6 +110,20 @@ public class AdminController {
         getCurrentAdmin(request);
         return ResponseEntity.ok(
             adminService.getDashboardStats());
+    }
+
+    @GetMapping("/analytics")
+    public ResponseEntity<?> analytics(
+            HttpServletRequest request,
+            @RequestParam(defaultValue = "month") String range,
+            @RequestParam(required = false) LocalDate from,
+            @RequestParam(required = false) LocalDate to,
+            @RequestParam(required = false) String route,
+            @RequestParam(required = false) String bus) {
+        getCurrentAdmin(request);
+        return ResponseEntity.ok(ApiResponse.success(
+            "Analytics fetched.",
+            adminAnalyticsService.getAnalytics(range, from, to, route, bus)));
     }
 
     //TRANSACTIONS 

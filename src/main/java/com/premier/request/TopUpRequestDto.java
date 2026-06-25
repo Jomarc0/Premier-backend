@@ -13,5 +13,7 @@ public class TopUpRequestDto {
     @DecimalMax(value = "10000.00",
         message = "Maximum top-up is ₱10,000")
     private BigDecimal amount;
-    
+
+    private String paymentMethod;
+
 }

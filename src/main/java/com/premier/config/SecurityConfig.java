@@ -3,6 +3,7 @@ package com.premier.config;
 import com.premier.admin.security.AdminAuthFilter;
 import com.premier.driver.security.DriverJwtAuthFilter;
 import com.premier.security.JwtAuthFilter;
+import org.springframework.core.annotation.Order;
 import org.springframework.context.annotation.*;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -35,6 +36,27 @@ public class SecurityConfig {
     }
 
     @Bean
+    @Order(1)
+    public SecurityFilterChain staffQueueFilterChain(HttpSecurity http)
+            throws Exception {
+        http
+            .securityMatcher("/api/staff/**")
+            .csrf(AbstractHttpConfigurer::disable)
+            .httpBasic(AbstractHttpConfigurer::disable)
+            .formLogin(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(
+                corsConfigurationSource()))
+            .sessionManagement(session -> session
+                .sessionCreationPolicy(
+                    SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().permitAll());
+
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     public SecurityFilterChain filterChain(HttpSecurity http)
             throws Exception {
         http
@@ -76,6 +98,9 @@ public class SecurityConfig {
                     "/api/driver/location",
                     "/api/driver/live-locations",
                     "/api/driver/shift-history/**",
+                    // Staff bus queue web dashboard
+                    "/api/staff/bus-queue",
+                    "/api/staff/bus-queue/**",
                     // RFID Terminal
                     "/api/rfid/**",
                     "/api/auth/**",
@@ -116,14 +141,29 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "http://localhost:5174",
-            "http://localhost:5175",
-            "http://localhost:5176",
-            "http://localhost:3001",
-            "http://localhost:3002",
+        config.setAllowedOriginPatterns(List.of(
+            "http://localhost:5177",
+            "http://127.0.0.1:5177",
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+            "http://192.168.*.*:*",
+            "http://10.*.*.*:*",
+            "http://172.16.*.*:*",
+            "http://172.17.*.*:*",
+            "http://172.18.*.*:*",
+            "http://172.19.*.*:*",
+            "http://172.20.*.*:*",
+            "http://172.21.*.*:*",
+            "http://172.22.*.*:*",
+            "http://172.23.*.*:*",
+            "http://172.24.*.*:*",
+            "http://172.25.*.*:*",
+            "http://172.26.*.*:*",
+            "http://172.27.*.*:*",
+            "http://172.28.*.*:*",
+            "http://172.29.*.*:*",
+            "http://172.30.*.*:*",
+            "http://172.31.*.*:*",
             //vercel
             "https://premierusers.vercel.app",
             "https://premierrfid.vercel.app",

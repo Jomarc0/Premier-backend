@@ -26,10 +26,15 @@ public class LocationService {
     private final SimpMessagingTemplate    ws;
 
     // Route endpoints
-    private static final double SM_LIPA_LAT     = 13.9411;
-    private static final double SM_LIPA_LNG     = 121.1638;
-    private static final double SM_BATANGAS_LAT = 13.7565;
-    private static final double SM_BATANGAS_LNG = 121.0584;
+    private static final String ROUTE_SM_TO_GRAND = "SM Terminal to Grand Terminal";
+    private static final String ROUTE_GRAND_TO_SM = "Grand Terminal to SM Terminal";
+    private static final String GEOFENCE_SM_TERMINAL = "AT_SM_TERMINAL";
+    private static final String GEOFENCE_GRAND_TERMINAL = "AT_GRAND_TERMINAL";
+
+    private static final double SM_LIPA_LAT     = 13.954781;
+    private static final double SM_LIPA_LNG     = 121.163096;
+    private static final double GRAND_TERMINAL_LAT = 13.790391;
+    private static final double GRAND_TERMINAL_LNG = 121.062721;
     private static final double GEOFENCE_RADIUS = 0.3; // km
 
     // POST /location
@@ -45,8 +50,12 @@ public class LocationService {
             Vehicle vehicle = vehicleRepo.findByPlateNumber(plate)
                     .orElseThrow(() -> new RuntimeException("Vehicle not found: " + plate));
 
+            String geofence = checkGeofence(req.getLatitude(), req.getLongitude());
+            Optional<String> updatedRoute = routeForTerminal(geofence);
+
             vehicle.setLatitude(req.getLatitude());
             vehicle.setLongitude(req.getLongitude());
+            updatedRoute.ifPresent(vehicle::setRoute);
             vehicleRepo.save(vehicle);
 
             Optional<DriverShift> activeShift = shiftRepo
@@ -78,7 +87,6 @@ public class LocationService {
             locationRepo.save(loc);
 
             // Route intelligence
-            String              geofence = checkGeofence(req.getLatitude(), req.getLongitude());
             boolean             deviated = isDeviated(req.getLatitude(), req.getLongitude());
             Map<String, Object> etaData  = computeEta(req.getLatitude(), req.getLongitude(), req.getSpeed());
 
@@ -90,6 +98,8 @@ public class LocationService {
             wsPayload.put("speed",       req.getSpeed());
             wsPayload.put("heading",     req.getHeading());
             wsPayload.put("geofence",    geofence);
+            wsPayload.put("route",       vehicle.getRoute());
+            wsPayload.put("routeUpdated", updatedRoute.isPresent());
             wsPayload.put("deviated",    deviated);
             wsPayload.put("eta",         etaData);
             wsPayload.put("timestamp",   LocalDateTime.now().toString());
@@ -101,10 +111,13 @@ public class LocationService {
             result.put("status",   "OK");
             result.put("savedId",  loc.getId());
             result.put("geofence", geofence);
+            result.put("route", vehicle.getRoute());
+            result.put("routeUpdated", updatedRoute.isPresent());
             result.put("deviated", deviated);
             result.put("eta",      etaData);
 
-            log.info("GPS saved: {} (geofence={}, shiftId={})", plate, geofence, shiftId);
+            log.info("GPS saved: {} (geofence={}, route={}, shiftId={})",
+                    plate, geofence, vehicle.getRoute(), shiftId);
             return ApiResponse.success("Location updated.", result);
 
         } catch (Exception e) {
@@ -143,10 +156,20 @@ public class LocationService {
 
     private String checkGeofence(double lat, double lng) {
         if (distKm(lat, lng, SM_LIPA_LAT, SM_LIPA_LNG) <= GEOFENCE_RADIUS)
-            return "AT_SM_LIPA";
-        if (distKm(lat, lng, SM_BATANGAS_LAT, SM_BATANGAS_LNG) <= GEOFENCE_RADIUS)
-            return "AT_SM_BATANGAS";
+            return GEOFENCE_SM_TERMINAL;
+        if (distKm(lat, lng, GRAND_TERMINAL_LAT, GRAND_TERMINAL_LNG) <= GEOFENCE_RADIUS)
+            return GEOFENCE_GRAND_TERMINAL;
         return "EN_ROUTE";
+    }
+
+    private Optional<String> routeForTerminal(String geofence) {
+        if (GEOFENCE_SM_TERMINAL.equals(geofence)) {
+            return Optional.of(ROUTE_SM_TO_GRAND);
+        }
+        if (GEOFENCE_GRAND_TERMINAL.equals(geofence)) {
+            return Optional.of(ROUTE_GRAND_TO_SM);
+        }
+        return Optional.empty();
     }
 
     private boolean isDeviated(double lat, double lng) {
@@ -156,13 +179,13 @@ public class LocationService {
     private Map<String, Object> computeEta(double lat, double lng, Double speedKmh) {
         double speed    = (speedKmh != null && speedKmh > 0) ? speedKmh : 30.0;
         double dLipa    = distKm(lat, lng, SM_LIPA_LAT, SM_LIPA_LNG);
-        double dBatangas = distKm(lat, lng, SM_BATANGAS_LAT, SM_BATANGAS_LNG);
+        double dGrand = distKm(lat, lng, GRAND_TERMINAL_LAT, GRAND_TERMINAL_LNG);
 
         Map<String, Object> eta = new LinkedHashMap<>();
         eta.put("distToSmLipaKm",      round1(dLipa));
-        eta.put("distToSmBatangasKm",  round1(dBatangas));
+        eta.put("distToGrandTerminalKm",  round1(dGrand));
         eta.put("etaToSmLipaMin",      Math.round((dLipa     / speed) * 60));
-        eta.put("etaToSmBatangasMin",  Math.round((dBatangas / speed) * 60));
+        eta.put("etaToGrandTerminalMin",  Math.round((dGrand / speed) * 60));
         return eta;
     }
 
@@ -181,7 +204,9 @@ public class LocationService {
     }
 
     private String getRouteName(String plateNumber) {
-        return "SM Lipa ↔ SM Batangas";
+        return vehicleRepo.findByPlateNumber(plateNumber)
+                .map(Vehicle::getRoute)
+                .orElse(ROUTE_SM_TO_GRAND);
     }
 
     // Cleanup 
@@ -194,3 +219,4 @@ public class LocationService {
         log.info("GPS cleanup: deleted {} records before {}", count, cutoff);
     }
 }
+
