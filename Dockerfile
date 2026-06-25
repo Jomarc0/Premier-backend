@@ -16,4 +16,4 @@ RUN chmod +x ./start.sh
 
 EXPOSE 8080
 
-CMD ["java", "-Xmx256m", "-jar", "target/premier-0.0.1-SNAPSHOT.jar"]
+CMD ["./start.sh"]

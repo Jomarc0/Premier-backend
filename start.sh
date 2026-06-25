@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 mkdir -p /etc/secrets
 echo "$DIALOGFLOW_CREDENTIALS_JSON" > /etc/secrets/dialogflow-service-account.json
