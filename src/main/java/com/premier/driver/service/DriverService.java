@@ -4,6 +4,7 @@ import com.premier.driver.model.*;
 import com.premier.driver.repository.*;
 import com.premier.driver.security.DriverJwtUtil;
 import com.premier.model.Passenger;
+import com.premier.model.PassengerStatus;
 import com.premier.repository.PassengerRepository;
 import com.premier.repository.TransactionRepository;
 import com.premier.response.ApiResponse;
@@ -25,12 +26,20 @@ import java.util.*;
 @Slf4j
 public class DriverService {
 
+    private static final String ROUTE_SM_TO_GRAND = "SM Terminal to Grand Terminal";
+    private static final String ROUTE_GRAND_TO_SM = "Grand Terminal to SM Terminal";
+    private static final double SM_TERMINAL_LAT = 13.954781;
+    private static final double SM_TERMINAL_LNG = 121.163096;
+    private static final double GRAND_TERMINAL_LAT = 13.790391;
+    private static final double GRAND_TERMINAL_LNG = 121.062721;
+    private static final double TERMINAL_GEOFENCE_KM = 5.0;
+    private static final double DEFAULT_SPEED_KMH = 30.0;
+
     private final DriverRepository             driverRepository;
     private final VehicleRepository            vehicleRepository;
     private final DriverAssignmentRepository   assignmentRepository;
     private final DriverShiftRepository        shiftRepository;
     private final PassengerOnboardRepository   onboardRepository;
-    private final EmergencyAlertRepository     emergencyAlertRepository;
     private final PassengerRepository          passengerRepository;
     private final TransactionRepository        transactionRepository;
     private final DriverJwtUtil                driverJwtUtil;
@@ -175,6 +184,11 @@ public class DriverService {
                 .orElseThrow(() -> new RuntimeException(
                         "Passenger not found. Please check RFID card."));
 
+        if (passenger.getStatus() != PassengerStatus.ACTIVE)
+            throw new RuntimeException(
+                "Account is " +
+                passenger.getStatus().name().toLowerCase() + ".");
+
         if (passenger.getBalance().compareTo(fare) < 0)
             throw new RuntimeException(
                 "Insufficient balance. Current: ₱"
@@ -313,50 +327,6 @@ public class DriverService {
         return ApiResponse.success(
                 "Shift ended successfully.", result);
     }
-
-    //  EMERGENCY 
-
-    @Transactional
-    public ApiResponse<Map<String, Object>> sendEmergency(
-            String plateNumber, String message,
-            Double latitude, Double longitude) {
-
-        Vehicle vehicle = vehicleRepository
-                .findByPlateNumber(plateNumber.toUpperCase())
-                .orElseThrow(() -> new RuntimeException(
-                        "Vehicle not found."));
-
-        DriverAssignment assignment = assignmentRepository
-                .findByVehiclePlateNumberAndStatus(
-                        plateNumber.toUpperCase(),
-                        AssignmentStatus.ACTIVE)
-                .orElseThrow(() -> new RuntimeException(
-                        "No driver assigned."));
-
-        EmergencyAlert alert = EmergencyAlert.builder()
-                .driver(assignment.getDriver())
-                .vehicle(vehicle)
-                .message(message != null ? message : "Emergency alert!")
-                .latitude(latitude)
-                .longitude(longitude)
-                .status(AlertStatus.ACTIVE)
-                .build();
-        emergencyAlertRepository.save(alert);
-
-        log.warn("EMERGENCY ALERT from vehicle {} — Driver: {}",
-                plateNumber, assignment.getDriver().getFullName());
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("alertId",    alert.getId());
-        result.put("plateNumber", plateNumber);
-        result.put("driverName", assignment.getDriver().getFullName());
-        result.put("message",    alert.getMessage());
-        result.put("status",     "ACTIVE");
-
-        return ApiResponse.success(
-                "Emergency alert sent to admin!", result);
-    }
-
     //  UPDATE GPS 
 
     @Transactional
@@ -386,13 +356,6 @@ public class DriverService {
         return ApiResponse.success("Drivers fetched.",
                 driverRepository.findAll());
     }
-
-    public ApiResponse<List<EmergencyAlert>> getActiveAlerts() {
-        return ApiResponse.success("Alerts fetched.",
-                emergencyAlertRepository
-                        .findByStatus(AlertStatus.ACTIVE));
-    }
-
     // MAP DATA 
     public ApiResponse<List<Map<String, Object>>> getBusLocations() {
         List<Map<String, Object>> buses = new ArrayList<>();
@@ -427,41 +390,42 @@ public class DriverService {
 
             //Get latest location for this vehicle
             DriverLocation latestLoc = latestLocMap.get(vehicle.getPlateNumber());
-            
-            boolean hasEmergency = emergencyAlertRepository
-                .findByStatus(AlertStatus.ACTIVE)
-                .stream()
-                .anyMatch(a -> a.getVehicle().getId().equals(vehicle.getId()));
-
-            Double lat = latestLoc != null ? latestLoc.getLatitude() : vehicle.getLatitude();
+Double lat = latestLoc != null ? latestLoc.getLatitude() : vehicle.getLatitude();
             Double lng = latestLoc != null ? latestLoc.getLongitude() : vehicle.getLongitude();
 
             Map<String, Object> bus = new HashMap<>();
             bus.put("vehicleId", vehicle.getId());
             bus.put("plateNumber", vehicle.getPlateNumber());
             bus.put("driverName", driverName);
-            bus.put("route", vehicle.getRoute() != null ? vehicle.getRoute() : "No route");
 
             // Default fallback locations
             if (vehicle.getRoute() != null &&
                 vehicle.getRoute().toUpperCase().contains("LIPA")) {
 
                 // SM Lipa fallback
-                bus.put("latitude", lat != null ? lat : 13.954781);
-                bus.put("longitude", lng != null ? lng : 121.163096);
+                bus.put("latitude", lat != null ? lat : SM_TERMINAL_LAT);
+                bus.put("longitude", lng != null ? lng : SM_TERMINAL_LNG);
 
             } else {
 
                 // Grand Terminal fallback
-                bus.put("latitude", lat != null ? lat : 13.790391);
-                bus.put("longitude", lng != null ? lng : 121.062721);
+                bus.put("latitude", lat != null ? lat : GRAND_TERMINAL_LAT);
+                bus.put("longitude", lng != null ? lng : GRAND_TERMINAL_LNG);
             }
 
+            String routeDirection = routeForLocation(lat, lng, vehicle.getRoute());
+            double speedKmh = latestLoc != null && latestLoc.getSpeed() != null && latestLoc.getSpeed() > 0
+                    ? latestLoc.getSpeed()
+                    : DEFAULT_SPEED_KMH;
+            double distanceRemainingKm = distanceToDestinationKm(lat, lng, routeDirection);
+
+            bus.put("route", routeDirection);
+            bus.put("distanceRemainingKm", round1(distanceRemainingKm));
+            bus.put("estimatedArrivalMinutes", Math.max(1L, Math.round((distanceRemainingKm / speedKmh) * 60.0)));
             bus.put("status", vehicle.getStatus().name());
             bus.put("passengersOnboard", onboard);
             bus.put("totalCapacity", vehicle.getTotalCapacity());
             bus.put("availableSeats", vehicle.getTotalCapacity() - onboard);
-            bus.put("hasEmergency", hasEmergency);
             bus.put("lastUpdated", latestLoc != null ? latestLoc.getRecordedAt() : null);
             bus.put("speed", latestLoc != null ? latestLoc.getSpeed() : 0.0);
             
@@ -471,62 +435,68 @@ public class DriverService {
         return ApiResponse.success("Bus locations fetched.", buses);
     }
 
-    public ApiResponse<List<Map<String, Object>>> getBusAlerts() {
-        List<Map<String, Object>> alerts =
-            emergencyAlertRepository
-                .findByStatus(AlertStatus.ACTIVE)
-                .stream()
-                .filter(a -> a.getLatitude() != null
-                          && a.getLongitude() != null)
-                .map(a -> {
-                    Map<String, Object> alert = new HashMap<>();
-                    alert.put("id",          a.getId());
-                    alert.put("type",        "EMERGENCY");
-                    alert.put("description", a.getMessage());
-                    alert.put("plateNumber",
-                        a.getVehicle().getPlateNumber());
-                    alert.put("driverName",
-                        a.getDriver().getFullName());
-                    alert.put("latitude",    a.getLatitude());
-                    alert.put("longitude",   a.getLongitude());
-                    alert.put("reportedAt",
-                        a.getCreatedAt().toString());
-                    alert.put("status",
-                        a.getStatus().name());
-                    return alert;
-                })
-                .toList();
+    private String routeForLocation(Double latitude, Double longitude, String storedRoute) {
+        if (latitude != null && longitude != null) {
+            double distanceToSm = distanceKm(latitude, longitude, SM_TERMINAL_LAT, SM_TERMINAL_LNG);
+            double distanceToGrand = distanceKm(latitude, longitude, GRAND_TERMINAL_LAT, GRAND_TERMINAL_LNG);
 
-        return ApiResponse.success(
-            "Bus alerts fetched.", alerts);
-    }
-    
-    //RESOLVE ALERT 
-    @Transactional
-    public ApiResponse<Map<String, Object>> resolveAlert(
-            Long alertId) {
+            if (distanceToSm <= TERMINAL_GEOFENCE_KM && distanceToSm <= distanceToGrand) {
+                return ROUTE_SM_TO_GRAND;
+            }
+            if (distanceToGrand <= TERMINAL_GEOFENCE_KM) {
+                return ROUTE_GRAND_TO_SM;
+            }
+        }
 
-        EmergencyAlert alert = emergencyAlertRepository
-            .findById(alertId)
-            .orElseThrow(() ->
-                new RuntimeException("Alert not found."));
+        String normalizedRoute = normalizeRoute(storedRoute);
+        if (normalizedRoute.equals(normalizeRoute(ROUTE_GRAND_TO_SM))) {
+            return ROUTE_GRAND_TO_SM;
+        }
+        if (normalizedRoute.equals(normalizeRoute(ROUTE_SM_TO_GRAND))) {
+            return ROUTE_SM_TO_GRAND;
+        }
 
-        // Mark as RESOLVED
-        alert.setStatus(AlertStatus.RESOLVED);
-        emergencyAlertRepository.save(alert);
+        if (latitude != null && longitude != null) {
+            double distanceToSm = distanceKm(latitude, longitude, SM_TERMINAL_LAT, SM_TERMINAL_LNG);
+            double distanceToGrand = distanceKm(latitude, longitude, GRAND_TERMINAL_LAT, GRAND_TERMINAL_LNG);
+            return distanceToSm <= distanceToGrand ? ROUTE_GRAND_TO_SM : ROUTE_SM_TO_GRAND;
+        }
 
-        log.info("Alert {} resolved for vehicle {}",
-            alertId,
-            alert.getVehicle().getPlateNumber());
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("alertId",     alertId);
-        result.put("plateNumber",
-            alert.getVehicle().getPlateNumber());
-        result.put("status",      "RESOLVED");
-
-        return ApiResponse.success(
-            "Alert resolved.", result);
+        return ROUTE_SM_TO_GRAND;
     }
 
+    private double distanceToDestinationKm(Double latitude, Double longitude, String routeDirection) {
+        if (latitude == null || longitude == null) {
+            return 0.0;
+        }
+
+        if (ROUTE_GRAND_TO_SM.equals(routeDirection)) {
+            return distanceKm(latitude, longitude, SM_TERMINAL_LAT, SM_TERMINAL_LNG);
+        }
+        return distanceKm(latitude, longitude, GRAND_TERMINAL_LAT, GRAND_TERMINAL_LNG);
+    }
+
+    private String normalizeRoute(String route) {
+        return String.valueOf(route)
+                .toLowerCase(Locale.ROOT)
+                .replace("\u2192", "to")
+                .replace("->", "to")
+                .replace("-", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private double distanceKm(double lat1, double lon1, double lat2, double lon2) {
+        final double earthRadiusKm = 6371.0;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    private double round1(double value) {
+        return Math.round(value * 10.0) / 10.0;
+    }
 }

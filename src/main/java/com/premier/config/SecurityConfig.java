@@ -86,12 +86,9 @@ public class SecurityConfig {
                     // Driver public
                     "/api/driver/login",
                     "/api/driver/buses",
-                    "/api/driver/bus-alerts",
                     "/api/driver/vehicles",
                     "/api/driver/drivers",
-                    "/api/driver/alerts",
                     "/api/driver/gps",
-                    "/api/driver/emergency/**",
                     // WebSocket
                     "/ws/**",
                     // GPS

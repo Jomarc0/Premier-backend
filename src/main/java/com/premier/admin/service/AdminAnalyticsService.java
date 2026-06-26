@@ -29,7 +29,6 @@ public class AdminAnalyticsService {
     private final DriverRepository driverRepository;
     private final DriverShiftRepository driverShiftRepository;
     private final PassengerOnboardRepository passengerOnboardRepository;
-    private final EmergencyAlertRepository emergencyAlertRepository;
     private final DriverLocationRepository driverLocationRepository;
 
     private static final DateTimeFormatter DAY_LABEL = DateTimeFormatter.ofPattern("MMM d");
@@ -46,7 +45,6 @@ public class AdminAnalyticsService {
         List<Driver> drivers = driverRepository.findAll();
         List<DriverShift> shifts = driverShiftRepository.findAll();
         List<PassengerOnboard> onboards = passengerOnboardRepository.findAll();
-        List<EmergencyAlert> emergencies = emergencyAlertRepository.findAll();
         List<DriverLocation> locations = driverLocationRepository.findAll();
 
         List<Transaction> txInRange = transactions.stream()
@@ -65,11 +63,6 @@ public class AdminAnalyticsService {
                 .filter(o -> routeMatches(o.getShift().getVehicle(), route))
                 .filter(o -> busMatches(o.getShift().getVehicle(), bus))
                 .toList();
-        List<EmergencyAlert> emergenciesInRange = emergencies.stream()
-                .filter(e -> inWindow(e.getCreatedAt(), window))
-                .filter(e -> routeMatches(e.getVehicle(), route))
-                .filter(e -> busMatches(e.getVehicle(), bus))
-                .toList();
         List<DriverLocation> locationsInRange = locations.stream()
                 .filter(l -> inWindow(l.getRecordedAt(), window))
                 .filter(l -> bus == null || bus.isBlank() || l.getPlateNumber().equalsIgnoreCase(bus))
@@ -78,7 +71,7 @@ public class AdminAnalyticsService {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("filters", filters(window, range, route, bus));
         data.put("executive", executive(passengers, txInRange, transactions, vehicles, shiftsInRange,
-                emergenciesInRange, onboardsInRange));
+                onboardsInRange));
         data.put("passengerAnalytics", passengerAnalytics(passengers, txInRange, onboardsInRange, window));
         data.put("rfidAnalytics", rfidAnalytics(passengers, txInRange));
         data.put("revenueAnalytics", revenueAnalytics(txInRange, onboardsInRange, window));
@@ -88,7 +81,6 @@ public class AdminAnalyticsService {
         data.put("queueTerminalAnalytics", queueTerminalAnalytics(vehicles, onboardsInRange));
         data.put("routeAnalytics", routeAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange));
         data.put("driverConductorAnalytics", driverAnalytics(drivers, shiftsInRange, onboardsInRange, txInRange));
-        data.put("emergencyAnalytics", emergencyAnalytics(emergenciesInRange, window));
         data.put("operationalAnalytics", operationalAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange));
         data.put("predictiveAnalytics", predictiveAnalytics(transactions, onboards, vehicles));
         data.put("dataSources", dataSources());
@@ -98,7 +90,6 @@ public class AdminAnalyticsService {
     private Map<String, Object> executive(List<Passenger> passengers, List<Transaction> txInRange,
                                           List<Transaction> allTransactions, List<Vehicle> vehicles,
                                           List<DriverShift> shiftsInRange,
-                                          List<EmergencyAlert> emergenciesInRange,
                                           List<PassengerOnboard> onboardsInRange) {
         LocalDate today = LocalDate.now();
         LocalDate weekStart = today.with(WeekFields.ISO.dayOfWeek(), 1);
@@ -123,7 +114,6 @@ public class AdminAnalyticsService {
                         && !atTerminal(v)).count(),
                 "busesAtTerminal", vehicles.stream().filter(this::atTerminal).count(),
                 "totalTripsToday", shiftsInRange.stream().filter(s -> sameDay(s.getShiftStart(), today)).count(),
-                "emergencyAlertsToday", emergenciesInRange.stream().filter(e -> sameDay(e.getCreatedAt(), today)).count(),
                 "averageWaitingTimeMinutes", null,
                 "averageArrivalTimeMinutes", avgTripMinutes(onboardsInRange)
         );
@@ -355,24 +345,6 @@ public class AdminAnalyticsService {
         );
     }
 
-    private Map<String, Object> emergencyAnalytics(List<EmergencyAlert> emergenciesInRange, DateWindow window) {
-        Map<String, Long> perBus = emergenciesInRange.stream()
-                .collect(Collectors.groupingBy(e -> e.getVehicle().getPlateNumber(), Collectors.counting()));
-        Map<String, Long> perRoute = emergenciesInRange.stream()
-                .collect(Collectors.groupingBy(e -> safeRoute(e.getVehicle()), Collectors.counting()));
-        return mapOf(
-                "summary", mapOf(
-                        "totalEmergencyAlerts", emergenciesInRange.size(),
-                        "activeEmergencies", emergenciesInRange.stream().filter(e -> e.getStatus() == AlertStatus.ACTIVE).count(),
-                        "resolvedEmergencies", emergenciesInRange.stream().filter(e -> e.getStatus() == AlertStatus.RESOLVED).count()
-                ),
-                "emergencyReportsPerBus", toChartLong(perBus, "plateNumber", "alerts"),
-                "emergencyReportsPerRoute", toChartLong(perRoute, "route", "alerts"),
-                "monthlyEmergencyFrequency", countEmergenciesByMonth(emergenciesInRange),
-                "emergencyTrend", countEmergenciesByBucket(emergenciesInRange, window)
-        );
-    }
-
     private Map<String, Object> operationalAnalytics(List<Vehicle> vehicles, List<DriverShift> shiftsInRange,
                                                      List<PassengerOnboard> onboardsInRange, List<Transaction> txInRange) {
         long completed = shiftsInRange.stream().filter(s -> s.getStatus() == ShiftStatus.COMPLETED).count();
@@ -442,7 +414,6 @@ public class AdminAnalyticsService {
                 "queueTerminal", "vehicle live status and passenger_onboards timestamps; waiting-time fields are not currently stored",
                 "routes", "vehicles.route through shifts/onboard records",
                 "drivers", "drivers, driver_shifts, passenger_onboards",
-                "emergencies", "emergency_alerts",
                 "predictive", "moving average over transactions and passenger_onboards"
         );
     }
@@ -512,8 +483,8 @@ public class AdminAnalyticsService {
 
     private boolean atTerminal(Vehicle vehicle) {
         return vehicle.getLatitude() != null && vehicle.getLongitude() != null
-                && (distance(vehicle.getLatitude(), vehicle.getLongitude(), 13.954781, 121.163096) <= 0.3
-                || distance(vehicle.getLatitude(), vehicle.getLongitude(), 13.790391, 121.062721) <= 0.3);
+                && (distance(vehicle.getLatitude(), vehicle.getLongitude(), 13.954781, 121.163096) <= 5.0
+                || distance(vehicle.getLatitude(), vehicle.getLongitude(), 13.790391, 121.062721) <= 5.0);
     }
 
     private String safeRoute(Vehicle vehicle) {
@@ -577,20 +548,6 @@ public class AdminAnalyticsService {
                 .filter(t -> t.getCreatedAt() != null)
                 .collect(Collectors.groupingBy(t -> t.getCreatedAt().format(MONTH_LABEL), TreeMap::new, Collectors.counting()))
                 .entrySet().stream().map(e -> mapOf("name", e.getKey(), "count", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> countEmergenciesByBucket(List<EmergencyAlert> emergencies, DateWindow window) {
-        return emergencies.stream()
-                .filter(e -> e.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(e -> bucketLabel(e.getCreatedAt()), TreeMap::new, Collectors.counting()))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "alerts", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> countEmergenciesByMonth(List<EmergencyAlert> emergencies) {
-        return emergencies.stream()
-                .filter(e -> e.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(e -> e.getCreatedAt().format(MONTH_LABEL), TreeMap::new, Collectors.counting()))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "alerts", e.getValue())).toList();
     }
 
     private List<Map<String, Object>> countByDay(List<LocalDateTime> values) {

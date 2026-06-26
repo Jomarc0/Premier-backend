@@ -28,10 +28,8 @@ public class DriverJwtAuthFilter extends OncePerRequestFilter {
         return path.equals("/api/driver/login")      ||
                path.equals("/api/driver/setup")      ||
                path.equals("/api/driver/buses")      ||
-               path.equals("/api/driver/bus-alerts") ||
                path.equals("/api/driver/vehicles")   ||
                path.equals("/api/driver/drivers")    ||
-               path.equals("/api/driver/alerts")     ||
                path.startsWith("/api/staff/")        ||
                path.startsWith("/ws")				 ||
                path.equals("/api/rfid/tap"); 
@@ -53,7 +51,7 @@ public class DriverJwtAuthFilter extends OncePerRequestFilter {
 
         String token = authHeader.substring(7);
 
-        // Only process DRIVER tokens — passenger tokens handled
+        // Only process DRIVER tokens â€” passenger tokens handled
         // by JwtAuthFilter downstream
         if (!driverJwtUtil.isDriverToken(token)) {
             chain.doFilter(request, response);

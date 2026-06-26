@@ -25,6 +25,7 @@ public class BusQueueService {
     private static final String SM_TO_GRAND = "SM Terminal to Grand Terminal";
     private static final String GRAND_TO_SM = "Grand Terminal to SM Terminal";
     private static final double DEFAULT_SPEED_KMH = 30.0;
+    private static final double TERMINAL_GEOFENCE_KM = 5.0;
 
     private final VehicleRepository vehicleRepository;
     private final DriverLocationRepository locationRepository;
@@ -54,8 +55,8 @@ public class BusQueueService {
 
     private List<QueueCandidate> buildQueue(String routeDirection) {
         return vehicleRepository.findAll().stream()
-                .filter(vehicle -> routeMatches(vehicle.getRoute(), routeDirection))
-                .map(vehicle -> toCandidate(vehicle, routeDirection))
+                .map(vehicle -> toCandidate(vehicle, routeForVehicle(vehicle)))
+                .filter(candidate -> routeDirection.equals(candidate.routeDirection()))
                 .sorted(Comparator
                         .comparing(QueueCandidate::distanceForSort)
                         .thenComparing(QueueCandidate::etaForSort)
@@ -106,6 +107,39 @@ public class BusQueueService {
         );
     }
 
+    private String routeForVehicle(Vehicle vehicle) {
+        if (vehicle.getLatitude() == null || vehicle.getLongitude() == null) {
+            return normalizedRouteOrDefault(vehicle.getRoute());
+        }
+
+        double distanceToSm = distanceKm(
+                vehicle.getLatitude(),
+                vehicle.getLongitude(),
+                smTerminalLatitude,
+                smTerminalLongitude
+        );
+        double distanceToGrand = distanceKm(
+                vehicle.getLatitude(),
+                vehicle.getLongitude(),
+                grandTerminalLatitude,
+                grandTerminalLongitude
+        );
+
+        if (distanceToSm <= TERMINAL_GEOFENCE_KM && distanceToSm <= distanceToGrand) {
+            return SM_TO_GRAND;
+        }
+        if (distanceToGrand <= TERMINAL_GEOFENCE_KM) {
+            return GRAND_TO_SM;
+        }
+
+        String storedRoute = normalizedRouteOrDefault(vehicle.getRoute());
+        if (storedRoute != null) {
+            return storedRoute;
+        }
+
+        return distanceToSm <= distanceToGrand ? GRAND_TO_SM : SM_TO_GRAND;
+    }
+
     private Optional<Double> latestSpeedKmh(String plateNumber) {
         return locationRepository.findTopByPlateNumberOrderByRecordedAtDesc(plateNumber)
                 .map(DriverLocation::getSpeed)
@@ -134,6 +168,16 @@ public class BusQueueService {
 
         String normalizedRoute = normalize(route);
         return normalizedRoute.equals(normalize(requiredRoute));
+    }
+
+    private String normalizedRouteOrDefault(String route) {
+        if (routeMatches(route, SM_TO_GRAND)) {
+            return SM_TO_GRAND;
+        }
+        if (routeMatches(route, GRAND_TO_SM)) {
+            return GRAND_TO_SM;
+        }
+        return null;
     }
 
     private String normalize(String value) {

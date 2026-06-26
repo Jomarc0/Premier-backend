@@ -61,6 +61,10 @@ public class FarePaymentService {
         Passenger passenger = passengerRepository.findLockedById(principal.getId())
                 .orElseThrow(() -> new RuntimeException("Passenger not found."));
 
+        if (passenger.getStatus() != PassengerStatus.ACTIVE) {
+            throw new RuntimeException("Account is " + passenger.getStatus().name().toLowerCase() + ".");
+        }
+
         expireExistingQrTokens(passenger.getId());
 
         String rawToken = newToken();

@@ -3,6 +3,8 @@ package com.premier.admin.service;
 import com.premier.admin.model.*;
 import com.premier.admin.repository.*;
 import com.premier.admin.security.AdminJwtUtil;
+import com.premier.driver.model.*;
+import com.premier.driver.repository.*;
 import com.premier.model.*;
 import com.premier.repository.*;
 import com.premier.response.ApiResponse;
@@ -30,6 +32,8 @@ public class AdminService {
     private final TransactionRepository  transactionRepository;
     private final ActivityLogRepository  activityLogRepository;
     private final TotpService            totpService;
+    private final DriverRepository       driverRepository;
+    private final VehicleRepository      vehicleRepository;
 
     public AdminService(
             AdminRepository adminRepository,
@@ -38,7 +42,9 @@ public class AdminService {
             PassengerRepository passengerRepository,
             TransactionRepository transactionRepository,
             ActivityLogRepository activityLogRepository,
-            TotpService totpService) {
+            TotpService totpService,
+            DriverRepository driverRepository,
+            VehicleRepository vehicleRepository) {
         this.adminRepository       = adminRepository;
         this.adminJwtUtil          = adminJwtUtil;
         this.passwordEncoder       = passwordEncoder;
@@ -46,6 +52,8 @@ public class AdminService {
         this.transactionRepository = transactionRepository;
         this.activityLogRepository = activityLogRepository;
         this.totpService           = totpService;
+        this.driverRepository      = driverRepository;
+        this.vehicleRepository     = vehicleRepository;
     }
 
     // AUTH
@@ -350,6 +358,61 @@ public class AdminService {
     }
 
     @Transactional
+    public ApiResponse<Map<String, Object>> freezePassengerCard(
+            Admin admin, Long passengerId) {
+        return updatePassengerCardStatus(
+            admin,
+            passengerId,
+            PassengerStatus.SUSPENDED,
+            "FREEZE_CARD",
+            "Card frozen.");
+    }
+
+    @Transactional
+    public ApiResponse<Map<String, Object>> unfreezePassengerCard(
+            Admin admin, Long passengerId) {
+        return updatePassengerCardStatus(
+            admin,
+            passengerId,
+            PassengerStatus.ACTIVE,
+            "UNFREEZE_CARD",
+            "Card unfrozen.");
+    }
+
+    private ApiResponse<Map<String, Object>> updatePassengerCardStatus(
+            Admin admin,
+            Long passengerId,
+            PassengerStatus status,
+            String action,
+            String message) {
+
+        Passenger passenger = passengerRepository
+            .findById(passengerId)
+            .orElseThrow(() ->
+                new RuntimeException(
+                    "Passenger not found."));
+
+        PassengerStatus oldStatus = passenger.getStatus();
+        passenger.setStatus(status);
+        passengerRepository.save(passenger);
+
+        logActivity(admin, action,
+            "PASSENGER", passengerId,
+            "Updated passenger " + passengerId +
+            " card status from " + oldStatus +
+            " to " + status,
+            "localhost");
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("passengerId", passengerId);
+        result.put("cardNumber", passenger.getCardNumber());
+        result.put("oldStatus", oldStatus);
+        result.put("status", status);
+
+        return ApiResponse.success(message, result);
+    }
+
+    @Transactional
     public ApiResponse<Passenger> createPassenger(
             Admin admin,
             String cardNumber,
@@ -388,6 +451,206 @@ public class AdminService {
 
         return ApiResponse.success(
             "Passenger created successfully.", saved);
+    }
+
+    // DRIVER MANAGEMENT
+    @Transactional
+    public ApiResponse<Driver> createDriver(
+            Admin admin,
+            String fullName,
+            String licenseNumber,
+            String phoneNumber,
+            DriverStatus status) {
+
+        String normalizedLicense = normalizeRequired(
+            licenseNumber, "License number").toUpperCase();
+
+        if (driverRepository.existsByLicenseNumber(normalizedLicense))
+            throw new RuntimeException(
+                "License number already registered.");
+
+        Driver driver = Driver.builder()
+            .fullName(normalizeRequired(fullName, "Full name"))
+            .licenseNumber(normalizedLicense)
+            .phoneNumber(normalizeRequired(
+                phoneNumber, "Phone number"))
+            .status(status != null
+                ? status : DriverStatus.INACTIVE)
+            .build();
+
+        Driver saved = driverRepository.save(driver);
+
+        logActivity(admin, "CREATE_DRIVER",
+            "DRIVER", saved.getId(),
+            "Created driver: " + saved.getFullName(),
+            "localhost");
+
+        return ApiResponse.success(
+            "Driver created.", saved);
+    }
+
+    @Transactional
+    public ApiResponse<Driver> updateDriver(
+            Admin admin,
+            Long driverId,
+            String fullName,
+            String licenseNumber,
+            String phoneNumber,
+            DriverStatus status) {
+
+        Driver driver = driverRepository.findById(driverId)
+            .orElseThrow(() ->
+                new RuntimeException("Driver not found."));
+
+        if (licenseNumber != null && !licenseNumber.isBlank()) {
+            String normalizedLicense =
+                licenseNumber.trim().toUpperCase();
+            driverRepository.findByLicenseNumber(normalizedLicense)
+                .filter(existing ->
+                    !existing.getId().equals(driverId))
+                .ifPresent(existing -> {
+                    throw new RuntimeException(
+                        "License number already registered.");
+                });
+            driver.setLicenseNumber(normalizedLicense);
+        }
+
+        if (fullName != null && !fullName.isBlank())
+            driver.setFullName(fullName.trim());
+        if (phoneNumber != null && !phoneNumber.isBlank())
+            driver.setPhoneNumber(phoneNumber.trim());
+        if (status != null)
+            driver.setStatus(status);
+
+        Driver saved = driverRepository.save(driver);
+
+        logActivity(admin, "UPDATE_DRIVER",
+            "DRIVER", driverId,
+            "Updated driver: " + saved.getFullName(),
+            "localhost");
+
+        return ApiResponse.success(
+            "Driver updated.", saved);
+    }
+
+    @Transactional
+    public ApiResponse<String> deleteDriver(
+            Admin admin,
+            Long driverId) {
+
+        Driver driver = driverRepository.findById(driverId)
+            .orElseThrow(() ->
+                new RuntimeException("Driver not found."));
+
+        driverRepository.delete(driver);
+
+        logActivity(admin, "DELETE_DRIVER",
+            "DRIVER", driverId,
+            "Deleted driver: " + driver.getFullName(),
+            "localhost");
+
+        return ApiResponse.success(
+            "Driver deleted.", "DELETED");
+    }
+
+    // VEHICLE MANAGEMENT
+    @Transactional
+    public ApiResponse<Vehicle> createVehicle(
+            Admin admin,
+            String plateNumber,
+            Integer totalCapacity,
+            String route,
+            VehicleStatus status) {
+
+        String normalizedPlate = normalizeRequired(
+            plateNumber, "Plate number").toUpperCase();
+
+        if (vehicleRepository.existsByPlateNumber(normalizedPlate))
+            throw new RuntimeException(
+                "Plate number already registered.");
+
+        Vehicle vehicle = Vehicle.builder()
+            .plateNumber(normalizedPlate)
+            .totalCapacity(validateCapacity(totalCapacity))
+            .route(normalizeOptional(route))
+            .status(status != null
+                ? status : VehicleStatus.INACTIVE)
+            .build();
+
+        Vehicle saved = vehicleRepository.save(vehicle);
+
+        logActivity(admin, "CREATE_VEHICLE",
+            "VEHICLE", saved.getId(),
+            "Created vehicle: " + saved.getPlateNumber(),
+            "localhost");
+
+        return ApiResponse.success(
+            "Vehicle created.", saved);
+    }
+
+    @Transactional
+    public ApiResponse<Vehicle> updateVehicle(
+            Admin admin,
+            Long vehicleId,
+            String plateNumber,
+            Integer totalCapacity,
+            String route,
+            VehicleStatus status) {
+
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
+            .orElseThrow(() ->
+                new RuntimeException("Vehicle not found."));
+
+        if (plateNumber != null && !plateNumber.isBlank()) {
+            String normalizedPlate =
+                plateNumber.trim().toUpperCase();
+            vehicleRepository.findByPlateNumber(normalizedPlate)
+                .filter(existing ->
+                    !existing.getId().equals(vehicleId))
+                .ifPresent(existing -> {
+                    throw new RuntimeException(
+                        "Plate number already registered.");
+                });
+            vehicle.setPlateNumber(normalizedPlate);
+        }
+
+        if (totalCapacity != null)
+            vehicle.setTotalCapacity(
+                validateCapacity(totalCapacity));
+        if (route != null && !route.isBlank())
+            vehicle.setRoute(route.trim());
+        if (status != null)
+            vehicle.setStatus(status);
+
+        Vehicle saved = vehicleRepository.save(vehicle);
+
+        logActivity(admin, "UPDATE_VEHICLE",
+            "VEHICLE", vehicleId,
+            "Updated vehicle: " + saved.getPlateNumber(),
+            "localhost");
+
+        return ApiResponse.success(
+            "Vehicle updated.", saved);
+    }
+
+    @Transactional
+    public ApiResponse<String> deleteVehicle(
+            Admin admin,
+            Long vehicleId) {
+
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
+            .orElseThrow(() ->
+                new RuntimeException("Vehicle not found."));
+
+        vehicleRepository.delete(vehicle);
+
+        logActivity(admin, "DELETE_VEHICLE",
+            "VEHICLE", vehicleId,
+            "Deleted vehicle: " + vehicle.getPlateNumber(),
+            "localhost");
+
+        return ApiResponse.success(
+            "Vehicle deleted.", "DELETED");
     }
 
     //  ADMIN MANAGEMENT 
@@ -522,6 +785,44 @@ public class AdminService {
             "Password reset.", "RESET");
     }
 
+    @Transactional
+    public ApiResponse<Map<String, Object>> resetAdminTotp(
+            Admin requestingAdmin, Long adminId) {
+
+        if (!requestingAdmin.isSuperAdmin())
+            throw new RuntimeException(
+                "Only Super Admin can reset Google Authenticator.");
+
+        Admin target = adminRepository.findById(adminId)
+            .orElseThrow(() ->
+                new RuntimeException("Admin not found."));
+
+        if (AdminRole.STAFF.equals(target.getRole()))
+            throw new RuntimeException(
+                "Staff accounts do not use Google Authenticator.");
+
+        target.setIs2FaEnabled(false);
+        target.setTwofaSecret(null);
+        target.setLoginAttempts(0);
+        target.setLockedUntil(null);
+        adminRepository.save(target);
+
+        logActivity(requestingAdmin, "RESET_ADMIN_2FA",
+            "ADMIN", adminId,
+            "Reset Google Authenticator for admin: " +
+            target.getUsername(),
+            "localhost");
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("adminId", adminId);
+        result.put("username", target.getUsername());
+        result.put("twoFactorEnabled", false);
+
+        return ApiResponse.success(
+            "Google Authenticator reset. Admin can log in with username and password, then set up a new authenticator.",
+            result);
+    }
+
     //ACTIVITY LOGS 
     public ApiResponse<Page<ActivityLog>> getActivityLogs(
             int page, int size) {
@@ -561,5 +862,26 @@ public class AdminService {
             .status("SUCCESS")
             .build();
         activityLogRepository.save(log);
+    }
+
+    private String normalizeRequired(
+            String value,
+            String label) {
+        if (value == null || value.isBlank())
+            throw new RuntimeException(label + " is required.");
+        return value.trim();
+    }
+
+    private int validateCapacity(Integer totalCapacity) {
+        if (totalCapacity == null || totalCapacity < 1)
+            throw new RuntimeException(
+                "Vehicle capacity must be at least 1.");
+        return totalCapacity;
+    }
+
+    private String normalizeOptional(String value) {
+        return value == null || value.isBlank()
+            ? null
+            : value.trim();
     }
 }

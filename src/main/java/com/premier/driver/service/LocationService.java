@@ -35,7 +35,7 @@ public class LocationService {
     private static final double SM_LIPA_LNG     = 121.163096;
     private static final double GRAND_TERMINAL_LAT = 13.790391;
     private static final double GRAND_TERMINAL_LNG = 121.062721;
-    private static final double GEOFENCE_RADIUS = 0.3; // km
+    private static final double GEOFENCE_RADIUS = 5.0; // km
 
     // POST /location
     @Transactional

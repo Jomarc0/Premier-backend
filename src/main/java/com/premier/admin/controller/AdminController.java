@@ -5,8 +5,7 @@ import com.premier.admin.repository.AdminRepository;
 import com.premier.admin.security.AdminJwtUtil;
 import com.premier.admin.service.AdminAnalyticsService;
 import com.premier.admin.service.AdminService;
-import com.premier.driver.model.Driver;
-import com.premier.driver.model.Vehicle;
+import com.premier.driver.model.*;
 import com.premier.driver.repository.DriverRepository;
 import com.premier.driver.repository.VehicleRepository;
 import com.premier.response.ApiResponse;
@@ -181,6 +180,24 @@ public class AdminController {
             adminService.addBalance(admin, id, amount, note));
     }
 
+    @PostMapping("/users/{id}/freeze-card")
+    public ResponseEntity<?> freezeCard(
+            HttpServletRequest request,
+            @PathVariable Long id) {
+        Admin admin = getCurrentAdmin(request);
+        return ResponseEntity.ok(
+            adminService.freezePassengerCard(admin, id));
+    }
+
+    @PostMapping("/users/{id}/unfreeze-card")
+    public ResponseEntity<?> unfreezeCard(
+            HttpServletRequest request,
+            @PathVariable Long id) {
+        Admin admin = getCurrentAdmin(request);
+        return ResponseEntity.ok(
+            adminService.unfreezePassengerCard(admin, id));
+    }
+
     @PostMapping("/users/create")
     public ResponseEntity<?> createUser(
             HttpServletRequest request,
@@ -209,6 +226,50 @@ public class AdminController {
                 "Drivers fetched.", drivers));
     }
 
+    @PostMapping("/drivers")
+    public ResponseEntity<?> createDriver(
+            HttpServletRequest request,
+            @RequestBody Map<String, Object> body) {
+        Admin admin = getCurrentAdmin(request);
+        DriverStatus status = body.get("status") != null
+            ? DriverStatus.valueOf(
+                body.get("status").toString())
+            : DriverStatus.INACTIVE;
+        return ResponseEntity.ok(adminService.createDriver(
+            admin,
+            (String) body.get("fullName"),
+            (String) body.get("licenseNumber"),
+            (String) body.get("phoneNumber"),
+            status));
+    }
+
+    @PutMapping("/drivers/{id}")
+    public ResponseEntity<?> updateDriver(
+            HttpServletRequest request,
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body) {
+        Admin admin = getCurrentAdmin(request);
+        DriverStatus status = body.get("status") != null
+            ? DriverStatus.valueOf(
+                body.get("status").toString())
+            : null;
+        return ResponseEntity.ok(adminService.updateDriver(
+            admin, id,
+            (String) body.get("fullName"),
+            (String) body.get("licenseNumber"),
+            (String) body.get("phoneNumber"),
+            status));
+    }
+
+    @DeleteMapping("/drivers/{id}")
+    public ResponseEntity<?> deleteDriver(
+            HttpServletRequest request,
+            @PathVariable Long id) {
+        Admin admin = getCurrentAdmin(request);
+        return ResponseEntity.ok(
+            adminService.deleteDriver(admin, id));
+    }
+
     //  VEHICLES 
 
     @GetMapping("/vehicles")
@@ -219,6 +280,58 @@ public class AdminController {
         return ResponseEntity.ok(
             ApiResponse.success(
                 "Vehicles fetched.", vehicles));
+    }
+
+    @PostMapping("/vehicles")
+    public ResponseEntity<?> createVehicle(
+            HttpServletRequest request,
+            @RequestBody Map<String, Object> body) {
+        Admin admin = getCurrentAdmin(request);
+        VehicleStatus status = body.get("status") != null
+            ? VehicleStatus.valueOf(
+                body.get("status").toString())
+            : VehicleStatus.INACTIVE;
+        Integer totalCapacity = body.get("totalCapacity") != null
+            ? Integer.valueOf(
+                body.get("totalCapacity").toString())
+            : null;
+        return ResponseEntity.ok(adminService.createVehicle(
+            admin,
+            (String) body.get("plateNumber"),
+            totalCapacity,
+            (String) body.get("route"),
+            status));
+    }
+
+    @PutMapping("/vehicles/{id}")
+    public ResponseEntity<?> updateVehicle(
+            HttpServletRequest request,
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body) {
+        Admin admin = getCurrentAdmin(request);
+        VehicleStatus status = body.get("status") != null
+            ? VehicleStatus.valueOf(
+                body.get("status").toString())
+            : null;
+        Integer totalCapacity = body.get("totalCapacity") != null
+            ? Integer.valueOf(
+                body.get("totalCapacity").toString())
+            : null;
+        return ResponseEntity.ok(adminService.updateVehicle(
+            admin, id,
+            (String) body.get("plateNumber"),
+            totalCapacity,
+            (String) body.get("route"),
+            status));
+    }
+
+    @DeleteMapping("/vehicles/{id}")
+    public ResponseEntity<?> deleteVehicle(
+            HttpServletRequest request,
+            @PathVariable Long id) {
+        Admin admin = getCurrentAdmin(request);
+        return ResponseEntity.ok(
+            adminService.deleteVehicle(admin, id));
     }
 
     // ADMIN MANAGEMENT 
@@ -310,6 +423,19 @@ public class AdminController {
         return ResponseEntity.ok(
             adminService.resetAdminPassword(
                 admin, id, body.get("newPassword")));
+    }
+
+    @PutMapping("/admins/{id}/reset-totp")
+    public ResponseEntity<?> resetAdminTotp(
+            HttpServletRequest request,
+            @PathVariable Long id) {
+        Admin admin = getCurrentAdmin(request);
+        if (!admin.isSuperAdmin())
+            return ResponseEntity.status(403)
+                .body(ApiResponse.error(
+                    "Access denied. Super Admin only."));
+        return ResponseEntity.ok(
+            adminService.resetAdminTotp(admin, id));
     }
 
     // ACTIVITY LOGS 
