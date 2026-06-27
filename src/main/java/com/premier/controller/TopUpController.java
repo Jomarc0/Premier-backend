@@ -5,10 +5,10 @@ import com.premier.model.Passenger;
 import com.premier.service.PayMongoService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/passenger/topup")
@@ -32,7 +32,7 @@ public class TopUpController {
             @AuthenticationPrincipal Passenger passenger,
             @PathVariable String referenceNumber) {
         return ResponseEntity.ok(
-                payMongoService.processPayment(referenceNumber));
+                payMongoService.processPayment(passenger, referenceNumber));
     }
 
     
@@ -41,7 +41,7 @@ public class TopUpController {
             @AuthenticationPrincipal Passenger passenger,
             @PathVariable String referenceNumber) {
         return ResponseEntity.ok(
-                payMongoService.checkPaymentStatus(referenceNumber));
+                payMongoService.checkPaymentStatus(passenger, referenceNumber));
     }
 
     
@@ -49,9 +49,13 @@ public class TopUpController {
     public ResponseEntity<?> webhook(
             @RequestBody String rawBody,
             @RequestHeader(value = "Paymongo-Signature", required = false) String signature) {
-        
-        payMongoService.handleWebhook(rawBody, signature);
-        return ResponseEntity.ok().build();
+
+        try {
+            payMongoService.handleWebhook(rawBody, signature);
+            return ResponseEntity.ok().build();
+        } catch (SecurityException ex) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
     }
     
 }

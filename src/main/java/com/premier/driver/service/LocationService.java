@@ -61,6 +61,13 @@ public class LocationService {
             Optional<DriverShift> activeShift = shiftRepo
                     .findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE);
 
+            if (req.getShiftId() != null
+                    && activeShift.map(DriverShift::getId)
+                    .filter(req.getShiftId()::equals)
+                    .isEmpty()) {
+                throw new RuntimeException("Shift does not belong to this vehicle.");
+            }
+
             Long shiftId = req.getShiftId() != null
                     ? req.getShiftId()
                     : activeShift.map(DriverShift::getId).orElse(null);

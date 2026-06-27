@@ -13,8 +13,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.*;
 
 @Service
@@ -27,6 +30,9 @@ public class PayMongoService {
 
     @Value("${paymongo.base-url}")
     private String baseUrl;
+
+    @Value("${paymongo.webhook-secret:}")
+    private String webhookSecret;
 
     private final TopUpRequestRepository topUpRequestRepository;
     private final PassengerRepository passengerRepository;
@@ -131,24 +137,22 @@ public class PayMongoService {
             String rawBody,
             String paymongoSignature) {
 
-        try {
-      
-            // In production, verify signature here
-            log.info("Webhook received");
-
-        } catch (Exception e) {
-            log.error("Webhook error: {}", e.getMessage());
+        if (!isValidWebhookSignature(rawBody, paymongoSignature)) {
+            throw new SecurityException("Invalid PayMongo webhook signature.");
         }
+
+        log.info("PayMongo webhook verified.");
     }
 
     //PROCESS PAYMENT
 
     @Transactional
     public ApiResponse<Map<String, Object>> processPayment(
+            Passenger principal,
             String referenceNumber) {
 
         TopUpRequest topUpRequest = topUpRequestRepository
-                .findByReferenceNumber(referenceNumber)
+                .findByReferenceNumberAndPassengerId(referenceNumber, principal.getId())
                 .orElseThrow(() ->
                     new RuntimeException("Transaction not found."));
 
@@ -172,7 +176,8 @@ public class PayMongoService {
         }
 
         //Update passenger balance
-        Passenger passenger = topUpRequest.getPassenger();
+        Passenger passenger = passengerRepository.findLockedById(principal.getId())
+                .orElseThrow(() -> new RuntimeException("Passenger not found."));
         BigDecimal amount = topUpRequest.getAmount();
         BigDecimal balanceBefore = passenger.getBalance();
         BigDecimal balanceAfter = balanceBefore.add(amount);
@@ -252,10 +257,11 @@ public class PayMongoService {
     // CHECK STATUS 
 
     public ApiResponse<Map<String, Object>> checkPaymentStatus(
+            Passenger principal,
             String referenceNumber) {
 
         TopUpRequest topUpRequest = topUpRequestRepository
-                .findByReferenceNumber(referenceNumber)
+                .findByReferenceNumberAndPassengerId(referenceNumber, principal.getId())
                 .orElseThrow(() ->
                     new RuntimeException("Transaction not found."));
 
@@ -267,6 +273,39 @@ public class PayMongoService {
                 topUpRequest.getPaymongoCheckoutUrl());
 
         return ApiResponse.success("Status fetched.", result);
+    }
+
+    private boolean isValidWebhookSignature(String rawBody, String signature) {
+        if (webhookSecret == null || webhookSecret.isBlank()) {
+            log.warn("PayMongo webhook secret is not configured.");
+            return false;
+        }
+        if (rawBody == null || signature == null || signature.isBlank()) {
+            return false;
+        }
+
+        String expected = hmacSha256(rawBody, webhookSecret);
+        return signature.contains(expected)
+                || MessageDigest.isEqual(
+                    expected.getBytes(StandardCharsets.UTF_8),
+                    signature.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String hmacSha256(String value, String secret) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(
+                    secret.getBytes(StandardCharsets.UTF_8),
+                    "HmacSHA256"));
+            byte[] hmac = mac.doFinal(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder();
+            for (byte b : hmac) {
+                out.append(String.format("%02x", b));
+            }
+            return out.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Unable to verify webhook signature.");
+        }
     }
 
     // BUILD HEADERS 

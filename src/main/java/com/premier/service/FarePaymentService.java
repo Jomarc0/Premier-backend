@@ -84,7 +84,7 @@ public class FarePaymentService {
                         .token(rawToken)
                         .payload(QR_PREFIX + rawToken)
                         .passengerId(passenger.getId())
-                        .cardNumber(passenger.getCardNumber())
+                        .cardNumber(mask(passenger.getCardNumber()))
                         .expiresAt(expiresAt)
                         .expiresInSeconds(qrExpirationSeconds)
                         .build());
@@ -193,8 +193,8 @@ public class FarePaymentService {
         }
 
         FarePaymentResponse data = FarePaymentResponse.builder()
-                .cardNumber(passenger.getCardNumber())
-                .rfidUid(rfidUid)
+                .cardNumber(mask(passenger.getCardNumber()))
+                .rfidUid(null)
                 .deductedFare(FIXED_FARE)
                 .balanceBefore(balanceBefore)
                 .remainingBalance(balanceAfter)
@@ -258,6 +258,13 @@ public class FarePaymentService {
             return null;
         }
         return plateNumber.trim().toUpperCase();
+    }
+
+    private String mask(String value) {
+        if (value == null || value.isBlank()) return null;
+        String trimmed = value.trim();
+        int visible = Math.min(4, trimmed.length());
+        return "****" + trimmed.substring(trimmed.length() - visible);
     }
 
     private String newToken() {

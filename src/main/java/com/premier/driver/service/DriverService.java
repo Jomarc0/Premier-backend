@@ -34,6 +34,7 @@ public class DriverService {
     private static final double GRAND_TERMINAL_LNG = 121.062721;
     private static final double TERMINAL_GEOFENCE_KM = 5.0;
     private static final double DEFAULT_SPEED_KMH = 30.0;
+    private static final BigDecimal FIXED_FARE = new BigDecimal("60.00");
 
     private final DriverRepository             driverRepository;
     private final VehicleRepository            vehicleRepository;
@@ -169,8 +170,9 @@ public class DriverService {
             Long shiftId,
             String rfidUid,
             String dropOffLocation,
-            BigDecimal fare,
+            BigDecimal requestedFare,
             int passengerCount) {
+        BigDecimal fare = FIXED_FARE;
 
         DriverShift shift = shiftRepository.findById(shiftId)
                 .orElseThrow(() -> new RuntimeException(
@@ -180,7 +182,7 @@ public class DriverService {
             throw new RuntimeException("Shift is not active.");
 
         Passenger passenger = passengerRepository
-                .findByRfidUid(rfidUid)
+                .findLockedByRfidUid(rfidUid.trim().toUpperCase())
                 .orElseThrow(() -> new RuntimeException(
                         "Passenger not found. Please check RFID card."));
 
@@ -332,6 +334,10 @@ public class DriverService {
     @Transactional
     public ApiResponse<String> updateGps(
             String plateNumber, Double latitude, Double longitude) {
+        if (latitude == null || latitude < -90 || latitude > 90 ||
+            longitude == null || longitude < -180 || longitude > 180) {
+            throw new RuntimeException("Invalid GPS coordinates.");
+        }
 
         Vehicle vehicle = vehicleRepository
                 .findByPlateNumber(plateNumber.toUpperCase())
@@ -441,10 +447,10 @@ Double lat = latestLoc != null ? latestLoc.getLatitude() : vehicle.getLatitude()
             double distanceToGrand = distanceKm(latitude, longitude, GRAND_TERMINAL_LAT, GRAND_TERMINAL_LNG);
 
             if (distanceToSm <= TERMINAL_GEOFENCE_KM && distanceToSm <= distanceToGrand) {
-                return ROUTE_SM_TO_GRAND;
+                return ROUTE_GRAND_TO_SM;
             }
             if (distanceToGrand <= TERMINAL_GEOFENCE_KM) {
-                return ROUTE_GRAND_TO_SM;
+                return ROUTE_SM_TO_GRAND;
             }
         }
 

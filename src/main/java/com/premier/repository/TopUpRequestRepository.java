@@ -13,13 +13,12 @@ public interface TopUpRequestRepository
     Optional<TopUpRequest> findByReferenceNumber(
         String referenceNumber);
 
+    Optional<TopUpRequest> findByReferenceNumberAndPassengerId(
+        String referenceNumber, Long passengerId);
+
     //verifyPayment
     Optional<TopUpRequest> findByPaymongoLinkId(
         String linkId);
-
-    // webhook
-    Optional<TopUpRequest> findByPaymongoPaymentIntentId(
-    		String paymentIntentId);
 
     // Get passenger top-up history
     List<TopUpRequest> findByPassengerIdOrderByCreatedAtDesc(

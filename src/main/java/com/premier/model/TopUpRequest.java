@@ -26,7 +26,6 @@ public class TopUpRequest {
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal amount;
 
-    private String paymongoPaymentIntentId;
     private String paymongoCheckoutUrl;
     private String paymongoLinkId;
     private String referenceNumber;

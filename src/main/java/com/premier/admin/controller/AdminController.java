@@ -12,7 +12,6 @@ import com.premier.response.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -65,12 +64,6 @@ public class AdminController {
     }
 
     // AUTH 
-
-    @GetMapping("/auth/generate-hash")
-    public String generateHash(
-            @RequestParam String password) {
-        return new BCryptPasswordEncoder().encode(password);
-    }
 
     @PostMapping("/auth/login")
     public ResponseEntity<?> login(

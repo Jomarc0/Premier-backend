@@ -15,9 +15,16 @@ public class BalanceService {
             "Balance fetched.",
             BalanceResponse.builder()
                 .id(passenger.getId())
-                .cardNumber(passenger.getCardNumber())
+                .cardNumber(mask(passenger.getCardNumber()))
                 .balance(passenger.getBalance())
                 .build()
         );
+    }
+
+    private String mask(String value) {
+        if (value == null || value.isBlank()) return null;
+        String trimmed = value.trim();
+        int visible = Math.min(4, trimmed.length());
+        return "****" + trimmed.substring(trimmed.length() - visible);
     }
 }

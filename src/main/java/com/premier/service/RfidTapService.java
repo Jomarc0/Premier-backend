@@ -50,19 +50,19 @@ public class RfidTapService {
                 .orElse(null);
 
         if (passenger == null) {
-            log.warn("RFID tap: card not found [uid={}]", rfidUid);
+            log.warn("RFID tap: card not found [uid={}]", mask(rfidUid));
             return ApiResponse.error("Card not found. Please register your RFID card.");
         }
 
         // Validate card status
         if (passenger.getStatus() == PassengerStatus.BLOCKED) {
-            log.warn("RFID tap: card blocked [uid={}]", rfidUid);
+            log.warn("RFID tap: card blocked [uid={}]", mask(rfidUid));
             return ApiResponse.error("Your card is blocked. Please contact support.");
         }
 
         if (passenger.getStatus() != PassengerStatus.ACTIVE) {
             log.warn("RFID tap: card not active [uid={}, status={}]",
-                    rfidUid, passenger.getStatus());
+                    mask(rfidUid), passenger.getStatus());
             return ApiResponse.error("Your card is not active. Please contact support.");
         }
 
@@ -70,7 +70,7 @@ public class RfidTapService {
         LocalDateTime lastTap = cooldownMap.get(rfidUid);
         if (lastTap != null &&
                 lastTap.plusSeconds(COOLDOWN_SECONDS).isAfter(LocalDateTime.now())) {
-            log.info("RFID tap: cooldown active [uid={}]", rfidUid);
+            log.info("RFID tap: cooldown active [uid={}]", mask(rfidUid));
             return ApiResponse.error("Tap too fast. Please wait a moment and try again.");
         }
 
@@ -78,7 +78,7 @@ public class RfidTapService {
         BigDecimal balanceBefore = passenger.getBalance();
         if (balanceBefore.compareTo(FIXED_FARE) < 0) {
             log.info("RFID tap: insufficient balance [uid={}, balance={}]",
-                    rfidUid, balanceBefore);
+                    mask(rfidUid), balanceBefore);
             return ApiResponse.error(
                     String.format("Insufficient balance. Current: ₱%.2f, Required: ₱%.2f",
                             balanceBefore, FIXED_FARE));
@@ -117,8 +117,8 @@ public class RfidTapService {
 
         // Build and return response
         RfidTapResponse data = RfidTapResponse.builder()
-                .cardNumber(passenger.getCardNumber())
-                .rfidUid(rfidUid)
+                .cardNumber(mask(passenger.getCardNumber()))
+                .rfidUid(null)
                 .deductedFare(FIXED_FARE)
                 .remainingBalance(balanceAfter)
                 .referenceNumber(refNumber)
@@ -126,8 +126,15 @@ public class RfidTapService {
                 .build();
 
         log.info("RFID tap success [uid={}, ref={}, {}→{}]",
-                rfidUid, refNumber, balanceBefore, balanceAfter);
+                mask(rfidUid), refNumber, balanceBefore, balanceAfter);
 
         return ApiResponse.success("Fare deducted successfully.", data);
+    }
+
+    private String mask(String value) {
+        if (value == null || value.isBlank()) return null;
+        String trimmed = value.trim();
+        int visible = Math.min(4, trimmed.length());
+        return "****" + trimmed.substring(trimmed.length() - visible);
     }
 }

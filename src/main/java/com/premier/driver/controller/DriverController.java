@@ -8,7 +8,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.math.BigDecimal;
 import java.util.Map;
 
 @RestController
@@ -44,14 +43,12 @@ public class DriverController {
                 body.get("shiftId").toString());
         String rfidUid = (String) body.get("rfidUid");
         String dropOff = (String) body.get("dropOffLocation");
-        BigDecimal fare = new BigDecimal(
-                body.get("fare").toString());
         int count = body.get("passengerCount") != null
                 ? Integer.parseInt(
                     body.get("passengerCount").toString()) : 1;
         return ResponseEntity.ok(
                 driverService.tapIn(
-                        shiftId, rfidUid, dropOff, fare, count));
+                        shiftId, rfidUid, dropOff, null, count));
     }
 
     // CONFIRM DROP-OFF 

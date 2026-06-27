@@ -3,6 +3,7 @@ package com.premier.rfid;
 import com.premier.driver.model.DriverShift;
 import com.premier.driver.model.ShiftStatus;
 import com.premier.driver.repository.DriverShiftRepository;
+import com.premier.driver.service.DriverService;
 import com.premier.response.ApiResponse;
 import com.premier.service.FarePaymentService;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +23,7 @@ public class RfidController {
 
     private final DriverShiftRepository driverShiftRepository;
     private final FarePaymentService farePaymentService;
+    private final DriverService driverService;
 
     private static final double SM_LIPA_LAT = 13.954781;
     private static final double SM_LIPA_LNG = 121.163096;
@@ -62,12 +64,20 @@ public class RfidController {
         }
     }
 
+    @GetMapping("/vehicles")
+    public ResponseEntity<?> getTerminalVehicles() {
+        return ResponseEntity.ok(driverService.getAllVehicles());
+    }
+
     @PostMapping("/driver/gps")
     public ResponseEntity<?> updateDriverGps(@RequestBody Map<String, Object> body) {
         try {
             String plateNumber = ((String) body.get("plateNumber")).toUpperCase().trim();
             Double latitude = Double.valueOf(body.get("latitude").toString());
             Double longitude = Double.valueOf(body.get("longitude").toString());
+            if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+                throw new IllegalArgumentException("Invalid GPS coordinates");
+            }
 
             driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
                     .ifPresent(shift -> {

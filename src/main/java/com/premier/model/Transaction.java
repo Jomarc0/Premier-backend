@@ -43,7 +43,6 @@ public class Transaction {
 
     private String referenceNumber;
     private String description;
-    private String paymongoPaymentId;
 
     @Column(updatable = false)
     private LocalDateTime createdAt;

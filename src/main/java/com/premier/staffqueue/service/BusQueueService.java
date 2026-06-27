@@ -126,10 +126,10 @@ public class BusQueueService {
         );
 
         if (distanceToSm <= TERMINAL_GEOFENCE_KM && distanceToSm <= distanceToGrand) {
-            return SM_TO_GRAND;
+            return GRAND_TO_SM;
         }
         if (distanceToGrand <= TERMINAL_GEOFENCE_KM) {
-            return GRAND_TO_SM;
+            return SM_TO_GRAND;
         }
 
         String storedRoute = normalizedRouteOrDefault(vehicle.getRoute());

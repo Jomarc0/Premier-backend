@@ -27,7 +27,7 @@ public class DialogflowService {
     @Value("${dialogflow.language-code:en}")
     private String languageCode;
 
-    @Value("${dialogflow.credentials-path:classpath:dialogflow/service-account.json}")
+    @Value("${dialogflow.credentials-path}")
     private String credentialsPath;
 
     private SessionsClient sessionsClient;
@@ -57,11 +57,9 @@ public class DialogflowService {
 
     private InputStream getCredentialsStream() throws IOException {
         if (credentialsPath.startsWith("classpath:")) {
-            // Local dev: src/main/resources/dialogflow/service-account.json
             String file = credentialsPath.replace("classpath:", "");
             return new ClassPathResource(file).getInputStream();
         } 
-        // Render: /app/dialogflow/service-account.json
         return new FileInputStream(credentialsPath);
     }
 

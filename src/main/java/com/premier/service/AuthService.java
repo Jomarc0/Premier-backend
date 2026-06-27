@@ -12,6 +12,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -20,6 +24,10 @@ public class AuthService {
     private final PassengerRepository passengerRepository;
     private final JwtUtil jwtUtil;
     private final TotpService totpService;
+    private final Map<String, Integer> loginAttempts = new ConcurrentHashMap<>();
+    private final Map<String, LocalDateTime> loginCooldowns = new ConcurrentHashMap<>();
+    private static final int MAX_LOGIN_ATTEMPTS = 5;
+    private static final int LOGIN_COOLDOWN_MINUTES = 15;
 
     //REGISTER 
     @Transactional
@@ -47,8 +55,8 @@ public class AuthService {
                 .build();
 
         passengerRepository.save(passenger);
-        log.info("Passenger registered: cardNumber={}", 
-            request.getCardNumber());
+        log.info("Passenger registered: cardNumber={}",
+            mask(request.getCardNumber()));
 
         return ApiResponse.success(
             "Registration successful! " +
@@ -60,17 +68,25 @@ public class AuthService {
 
     public ApiResponse<AuthResponse> login(
             LoginRequest request) {
+        String cardNumber = request.getCardNumber().trim();
+        enforceLoginCooldown(cardNumber);
 
         Passenger passenger = passengerRepository
-            .findByCardNumber(request.getCardNumber())
-            .orElseThrow(() ->
-                new InvalidRfidException(
-                    "Card number not found."));
+            .findByCardNumber(cardNumber)
+            .orElseThrow(() -> {
+                recordFailedLogin(cardNumber);
+                return new InvalidRfidException(
+                    "Invalid card number or account status.");
+            });
 
-        if (passenger.getStatus() != PassengerStatus.ACTIVE)
+        if (passenger.getStatus() != PassengerStatus.ACTIVE) {
+            recordFailedLogin(cardNumber);
             throw new RuntimeException(
                 "Account is " +
                 passenger.getStatus().name().toLowerCase());
+        }
+
+        clearLoginFailures(cardNumber);
 
         String tempToken = jwtUtil.generateTempToken(
             passenger.getId());
@@ -195,11 +211,43 @@ public class AuthService {
         return PassengerResponse.builder()
                 .id(p.getId())
                 .balance(p.getBalance())
-                .cardNumber(p.getCardNumber())
-                .rfidUid(p.getRfidUid())
+                .cardNumber(mask(p.getCardNumber()))
+                .rfidUid(null)
                 .is2FaEnabled(p.getIs2FaEnabled())  
                 .status(p.getStatus())
                 .createdAt(p.getCreatedAt())
                 .build();
+    }
+
+    private String mask(String value) {
+        if (value == null || value.isBlank()) return null;
+        String trimmed = value.trim();
+        int visible = Math.min(4, trimmed.length());
+        return "****" + trimmed.substring(trimmed.length() - visible);
+    }
+
+    private void enforceLoginCooldown(String cardNumber) {
+        LocalDateTime lockedUntil = loginCooldowns.get(cardNumber);
+        if (lockedUntil != null && lockedUntil.isAfter(LocalDateTime.now())) {
+            throw new RuntimeException("Too many login attempts. Please try again later.");
+        }
+        if (lockedUntil != null) {
+            loginCooldowns.remove(cardNumber);
+            loginAttempts.remove(cardNumber);
+        }
+    }
+
+    private void recordFailedLogin(String cardNumber) {
+        int attempts = loginAttempts.merge(cardNumber, 1, Integer::sum);
+        if (attempts >= MAX_LOGIN_ATTEMPTS) {
+            loginCooldowns.put(cardNumber,
+                LocalDateTime.now().plusMinutes(LOGIN_COOLDOWN_MINUTES));
+            log.warn("Passenger login temporarily locked for card={}", mask(cardNumber));
+        }
+    }
+
+    private void clearLoginFailures(String cardNumber) {
+        loginAttempts.remove(cardNumber);
+        loginCooldowns.remove(cardNumber);
     }
 }
