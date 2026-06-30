@@ -23,6 +23,7 @@ import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
@@ -69,7 +70,7 @@ public class FarePaymentService {
 
         String rawToken = newToken();
         String tokenHash = sha256(rawToken);
-        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(qrExpirationSeconds);
+        LocalDateTime expiresAt = nowUtc().plusSeconds(qrExpirationSeconds);
 
         FareQrToken token = FareQrToken.builder()
                 .tokenHash(tokenHash)
@@ -96,11 +97,15 @@ public class FarePaymentService {
         FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
                 .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
 
-        if (token.getStatus() != FareQrTokenStatus.ACTIVE) {
+        if (token.getStatus() == FareQrTokenStatus.USED) {
             throw new RuntimeException("QR fare token has already been used.");
         }
 
-        if (token.getExpiresAt().isBefore(LocalDateTime.now())) {
+        if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
+            throw new RuntimeException("QR fare token expired. Please generate a new one.");
+        }
+
+        if (token.getExpiresAt().isBefore(nowUtc())) {
             token.setStatus(FareQrTokenStatus.EXPIRED);
             fareQrTokenRepository.save(token);
             throw new RuntimeException("QR fare token expired. Please generate a new one.");
@@ -242,6 +247,10 @@ public class FarePaymentService {
                     token.setStatus(FareQrTokenStatus.EXPIRED);
                     fareQrTokenRepository.save(token);
                 });
+    }
+
+    private LocalDateTime nowUtc() {
+        return LocalDateTime.now(ZoneOffset.UTC);
     }
 
     private String normalizeQrPayload(String payload) {

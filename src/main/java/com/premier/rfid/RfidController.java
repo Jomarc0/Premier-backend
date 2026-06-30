@@ -9,7 +9,6 @@ import com.premier.service.FarePaymentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
@@ -29,7 +28,6 @@ public class RfidController {
     private static final double SM_LIPA_LNG = 121.163096;
 
     @PostMapping("/tap")
-    @Transactional
     public ResponseEntity<?> tapCard(@RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(farePaymentService.processRfidPayment(
@@ -41,7 +39,6 @@ public class RfidController {
     }
 
     @PostMapping("/qr/process")
-    @Transactional
     public ResponseEntity<?> processQrFare(@RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(farePaymentService.processQrPayment(
@@ -53,7 +50,6 @@ public class RfidController {
     }
 
     @PostMapping("/nfc/tap")
-    @Transactional
     public ResponseEntity<?> processNfcTap(@RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(farePaymentService.processRfidPayment(
