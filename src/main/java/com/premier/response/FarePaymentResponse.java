@@ -12,7 +12,9 @@ import java.time.LocalDateTime;
 public class FarePaymentResponse {
     private String cardNumber;
     private String rfidUid;
+    private BigDecimal baseFare;
     private BigDecimal deductedFare;
+    private String discountType;
     private BigDecimal remainingBalance;
     private BigDecimal balanceBefore;
     private String referenceNumber;

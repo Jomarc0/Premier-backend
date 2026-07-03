@@ -1,6 +1,7 @@
 package com.premier.admin.controller;
 
 import com.premier.admin.model.*;
+import com.premier.admin.request.AdminBalanceAdjustmentRequest;
 import com.premier.admin.repository.AdminRepository;
 import com.premier.admin.security.AdminJwtUtil;
 import com.premier.admin.service.AdminAnalyticsService;
@@ -8,8 +9,10 @@ import com.premier.admin.service.AdminService;
 import com.premier.driver.model.*;
 import com.premier.driver.repository.DriverRepository;
 import com.premier.driver.repository.VehicleRepository;
+import com.premier.driver.service.DriverOperationalStatusService;
 import com.premier.response.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -30,6 +33,7 @@ public class AdminController {
     private final AdminRepository    adminRepository;
     private final DriverRepository   driverRepository;
     private final VehicleRepository  vehicleRepository;
+    private final DriverOperationalStatusService driverOperationalStatusService;
 
     //  EXCEPTION HANDLER 
     @ExceptionHandler(RuntimeException.class)
@@ -164,13 +168,11 @@ public class AdminController {
     public ResponseEntity<?> addBalance(
             HttpServletRequest request,
             @PathVariable Long id,
-            @RequestBody Map<String, Object> body) {
+            @Valid @RequestBody AdminBalanceAdjustmentRequest body) {
         Admin admin = getCurrentAdmin(request);
-        BigDecimal amount = new BigDecimal(
-            body.get("amount").toString());
-        String note = (String) body.getOrDefault("note", "");
         return ResponseEntity.ok(
-            adminService.addBalance(admin, id, amount, note));
+            adminService.addBalance(admin, id, body.getAmount(), body.getReason(),
+                request.getRemoteAddr()));
     }
 
     @PostMapping("/users/{id}/freeze-card")
@@ -196,15 +198,13 @@ public class AdminController {
             HttpServletRequest request,
             @RequestBody Map<String, Object> body) {
         Admin admin = getCurrentAdmin(request);
-        String cardNumber = (String) body.get("cardNumber");
         String rfidUid    = (String) body.get("rfidUid");
-        BigDecimal balance = body.get("initialBalance") != null
-            ? new BigDecimal(
-                body.get("initialBalance").toString())
-            : BigDecimal.ZERO;
+        String category = body.get("category") != null
+            ? body.get("category").toString()
+            : "REGULAR";
         return ResponseEntity.ok(
             adminService.createPassenger(
-                admin, cardNumber, rfidUid, balance));
+                admin, rfidUid, category));
     }
 
     // DRIVERS
@@ -213,6 +213,7 @@ public class AdminController {
     public ResponseEntity<?> getAllDrivers(
             HttpServletRequest request) {
         getCurrentAdmin(request);
+        driverOperationalStatusService.reconcileStaleOperations();
         List<Driver> drivers = driverRepository.findAll();
         return ResponseEntity.ok(
             ApiResponse.success(
@@ -269,6 +270,7 @@ public class AdminController {
     public ResponseEntity<?> getAllVehicles(
             HttpServletRequest request) {
         getCurrentAdmin(request);
+        driverOperationalStatusService.reconcileStaleOperations();
         List<Vehicle> vehicles = vehicleRepository.findAll();
         return ResponseEntity.ok(
             ApiResponse.success(

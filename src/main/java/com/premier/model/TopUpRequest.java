@@ -7,7 +7,11 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "topup_requests")
+@Table(name = "topup_requests",
+        uniqueConstraints = {
+                @UniqueConstraint(name = "uk_topup_reference_number", columnNames = "reference_number"),
+                @UniqueConstraint(name = "uk_topup_paymongo_link_id", columnNames = "paymongo_link_id")
+        })
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -27,7 +31,10 @@ public class TopUpRequest {
     private BigDecimal amount;
 
     private String paymongoCheckoutUrl;
+    @Column(name = "paymongo_link_id")
     private String paymongoLinkId;
+
+    @Column(name = "reference_number")
     private String referenceNumber;
 
     @Enumerated(EnumType.STRING)

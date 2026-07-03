@@ -4,6 +4,7 @@ import com.premier.driver.model.*;
 import com.premier.driver.repository.*;
 import com.premier.driver.security.DriverJwtUtil;
 import com.premier.model.Passenger;
+import com.premier.model.PassengerCardCategory;
 import com.premier.model.PassengerStatus;
 import com.premier.repository.PassengerRepository;
 import com.premier.repository.TransactionRepository;
@@ -33,6 +34,7 @@ public class DriverService {
     private static final double GRAND_TERMINAL_LAT = 13.790391;
     private static final double GRAND_TERMINAL_LNG = 121.062721;
     private static final double TERMINAL_GEOFENCE_KM = 5.0;
+    private static final long GPS_ONLINE_WINDOW_MINUTES = 5;
     private static final double DEFAULT_SPEED_KMH = 30.0;
     private static final BigDecimal FIXED_FARE = new BigDecimal("60.00");
 
@@ -45,6 +47,7 @@ public class DriverService {
     private final TransactionRepository        transactionRepository;
     private final DriverJwtUtil                driverJwtUtil;
     private final DriverLocationRepository driverLocationRepository;
+    private final DriverOperationalStatusService driverOperationalStatusService;
 
     //LOGIN
 
@@ -172,8 +175,6 @@ public class DriverService {
             String dropOffLocation,
             BigDecimal requestedFare,
             int passengerCount) {
-        BigDecimal fare = FIXED_FARE;
-
         DriverShift shift = shiftRepository.findById(shiftId)
                 .orElseThrow(() -> new RuntimeException(
                         "Shift not found."));
@@ -190,6 +191,8 @@ public class DriverService {
             throw new RuntimeException(
                 "Account is " +
                 passenger.getStatus().name().toLowerCase() + ".");
+
+        BigDecimal fare = fareFor(passenger);
 
         if (passenger.getBalance().compareTo(fare) < 0)
             throw new RuntimeException(
@@ -247,6 +250,15 @@ public class DriverService {
 
         return ApiResponse.success(
                 "Tap-in successful! Fare deducted.", result);
+    }
+
+    private BigDecimal fareFor(Passenger passenger) {
+        if (Boolean.TRUE.equals(passenger.getDiscountEligible())
+                && passenger.getCardCategory() != null
+                && passenger.getCardCategory() != PassengerCardCategory.REGULAR) {
+            return FIXED_FARE.multiply(new BigDecimal("0.80"));
+        }
+        return FIXED_FARE;
     }
 
     //  DROP-OFF 
@@ -354,16 +366,19 @@ public class DriverService {
     // LIST HELPERS 
 
     public ApiResponse<List<Vehicle>> getAllVehicles() {
+        driverOperationalStatusService.reconcileStaleOperations();
         return ApiResponse.success("Vehicles fetched.",
                 vehicleRepository.findAll());
     }
 
     public ApiResponse<List<Driver>> getAllDrivers() {
+        driverOperationalStatusService.reconcileStaleOperations();
         return ApiResponse.success("Drivers fetched.",
                 driverRepository.findAll());
     }
     // MAP DATA 
     public ApiResponse<List<Map<String, Object>>> getBusLocations() {
+        driverOperationalStatusService.reconcileStaleOperations();
         List<Map<String, Object>> buses = new ArrayList<>();
 
         //Get ALL latest locations per plate (admin map)
@@ -396,8 +411,9 @@ public class DriverService {
 
             //Get latest location for this vehicle
             DriverLocation latestLoc = latestLocMap.get(vehicle.getPlateNumber());
-Double lat = latestLoc != null ? latestLoc.getLatitude() : vehicle.getLatitude();
-            Double lng = latestLoc != null ? latestLoc.getLongitude() : vehicle.getLongitude();
+            boolean hasFreshLocation = isFreshLocation(latestLoc);
+            Double lat = hasFreshLocation ? latestLoc.getLatitude() : vehicle.getLatitude();
+            Double lng = hasFreshLocation ? latestLoc.getLongitude() : vehicle.getLongitude();
 
             Map<String, Object> bus = new HashMap<>();
             bus.put("vehicleId", vehicle.getId());
@@ -420,25 +436,36 @@ Double lat = latestLoc != null ? latestLoc.getLatitude() : vehicle.getLatitude()
             }
 
             String routeDirection = routeForLocation(lat, lng, vehicle.getRoute());
-            double speedKmh = latestLoc != null && latestLoc.getSpeed() != null && latestLoc.getSpeed() > 0
+            double speedKmh = hasFreshLocation && latestLoc.getSpeed() != null && latestLoc.getSpeed() > 0
                     ? latestLoc.getSpeed()
                     : DEFAULT_SPEED_KMH;
             double distanceRemainingKm = distanceToDestinationKm(lat, lng, routeDirection);
+            String displayStatus = vehicle.getStatus() == VehicleStatus.ACTIVE && !hasFreshLocation
+                    ? VehicleStatus.INACTIVE.name()
+                    : vehicle.getStatus().name();
 
             bus.put("route", routeDirection);
             bus.put("distanceRemainingKm", round1(distanceRemainingKm));
             bus.put("estimatedArrivalMinutes", Math.max(1L, Math.round((distanceRemainingKm / speedKmh) * 60.0)));
-            bus.put("status", vehicle.getStatus().name());
+            bus.put("status", displayStatus);
+            bus.put("online", hasFreshLocation);
+            bus.put("locationFresh", hasFreshLocation);
             bus.put("passengersOnboard", onboard);
             bus.put("totalCapacity", vehicle.getTotalCapacity());
             bus.put("availableSeats", vehicle.getTotalCapacity() - onboard);
             bus.put("lastUpdated", latestLoc != null ? latestLoc.getRecordedAt() : null);
-            bus.put("speed", latestLoc != null ? latestLoc.getSpeed() : 0.0);
+            bus.put("speed", hasFreshLocation ? latestLoc.getSpeed() : 0.0);
             
             buses.add(bus);
         });
 
         return ApiResponse.success("Bus locations fetched.", buses);
+    }
+
+    private boolean isFreshLocation(DriverLocation location) {
+        return location != null
+                && location.getRecordedAt() != null
+                && location.getRecordedAt().isAfter(LocalDateTime.now().minusMinutes(GPS_ONLINE_WINDOW_MINUTES));
     }
 
     private String routeForLocation(Double latitude, Double longitude, String storedRoute) {

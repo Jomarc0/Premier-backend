@@ -5,6 +5,8 @@ import com.premier.response.ApiResponse;
 import com.premier.response.TopUpResponse;
 import com.premier.model.*;
 import com.premier.repository.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,6 +41,7 @@ public class PayMongoService {
     private final TransactionRepository transactionRepository;
     private final FirebaseService firebaseService;
     private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper;
 
     //  CREATE PAYMENT LINK 
 
@@ -141,7 +144,16 @@ public class PayMongoService {
             throw new SecurityException("Invalid PayMongo webhook signature.");
         }
 
-        log.info("PayMongo webhook verified.");
+        String linkId = extractPaidLinkId(rawBody);
+        if (linkId == null || linkId.isBlank()) {
+            log.info("PayMongo webhook verified, but no paid link ID was found.");
+            return;
+        }
+
+        topUpRequestRepository.findByPaymongoLinkId(linkId)
+                .ifPresentOrElse(
+                        this::completeTopUpRequest,
+                        () -> log.warn("PayMongo webhook link not found: {}", linkId));
     }
 
     //PROCESS PAYMENT
@@ -160,8 +172,10 @@ public class PayMongoService {
                 TransactionStatus.SUCCESS) {
             Map<String, Object> result = new HashMap<>();
             result.put("status", "ALREADY_PROCESSED");
-            result.put("balance",
+            result.put("amount", topUpRequest.getAmount());
+            result.put("newBalance",
                     topUpRequest.getPassenger().getBalance());
+            result.put("referenceNumber", referenceNumber);
             return ApiResponse.success(
                     "Already processed.", result);
         }
@@ -175,52 +189,16 @@ public class PayMongoService {
                     "Payment not yet completed.");
         }
 
-        //Update passenger balance
-        Passenger passenger = passengerRepository.findLockedById(principal.getId())
-                .orElseThrow(() -> new RuntimeException("Passenger not found."));
-        BigDecimal amount = topUpRequest.getAmount();
-        BigDecimal balanceBefore = passenger.getBalance();
-        BigDecimal balanceAfter = balanceBefore.add(amount);
-
-        passenger.setBalance(balanceAfter);
-        passengerRepository.save(passenger);
-
-        // Update top-up request status
-        topUpRequest.setStatus(TransactionStatus.SUCCESS);
-        topUpRequestRepository.save(topUpRequest);
-
-        // Save transaction record
-        Transaction tx = new Transaction();
-        tx.setPassenger(passenger);
-        tx.setType(TransactionType.TOPUP);
-        tx.setStatus(TransactionStatus.SUCCESS);
-        tx.setAmount(amount);
-        tx.setBalanceBefore(balanceBefore);
-        tx.setBalanceAfter(balanceAfter);
-        tx.setReferenceNumber(referenceNumber);
-        tx.setDescription("Top-up via PayMongo");
-        transactionRepository.save(tx);
-
-        // Send push notification - uses specific top-up success method
-        if (passenger.getFcmToken() != null) {
-            firebaseService.sendTopUpSuccess(
-                passenger.getFcmToken(),
-                amount.toString(),
-                balanceAfter.toString()
-            );
-        }
-
-        log.info("Top-up SUCCESS: ₱{} for passenger ID: {}",
-                amount, passenger.getId());
+        TopUpCompletion completion = completeTopUpRequest(topUpRequest);
 
         Map<String, Object> result = new HashMap<>();
         result.put("status", "SUCCESS");
-        result.put("amount", amount);
-        result.put("newBalance", balanceAfter);
+        result.put("amount", completion.amount());
+        result.put("newBalance", completion.balanceAfter());
         result.put("referenceNumber", referenceNumber);
 
         return ApiResponse.success(
-                "Top-up successful! ₱" + amount + " added.",
+                "Top-up successful! PHP " + completion.amount() + " added.",
                 result);
     }
 
@@ -274,6 +252,118 @@ public class PayMongoService {
 
         return ApiResponse.success("Status fetched.", result);
     }
+
+    private TopUpCompletion completeTopUpRequest(TopUpRequest topUpRequest) {
+        if (topUpRequest.getStatus() == TransactionStatus.SUCCESS) {
+            Passenger passenger = topUpRequest.getPassenger();
+            return new TopUpCompletion(
+                    topUpRequest.getAmount(),
+                    passenger.getBalance());
+        }
+
+        Passenger passenger = passengerRepository.findLockedById(
+                        topUpRequest.getPassenger().getId())
+                .orElseThrow(() -> new RuntimeException("Passenger not found."));
+        BigDecimal amount = topUpRequest.getAmount();
+        BigDecimal balanceBefore = passenger.getBalance();
+        BigDecimal balanceAfter = balanceBefore.add(amount);
+
+        passenger.setBalance(balanceAfter);
+        passengerRepository.save(passenger);
+
+        topUpRequest.setStatus(TransactionStatus.SUCCESS);
+        topUpRequestRepository.save(topUpRequest);
+
+        Transaction tx = new Transaction();
+        tx.setPassenger(passenger);
+        tx.setType(TransactionType.TOPUP);
+        tx.setStatus(TransactionStatus.SUCCESS);
+        tx.setAmount(amount);
+        tx.setBalanceBefore(balanceBefore);
+        tx.setBalanceAfter(balanceAfter);
+        tx.setReferenceNumber(topUpRequest.getReferenceNumber());
+        tx.setDescription("Top-up via PayMongo");
+        transactionRepository.save(tx);
+
+        if (passenger.getFcmToken() != null) {
+            firebaseService.sendTopUpSuccess(
+                    passenger.getFcmToken(),
+                    amount.toString(),
+                    balanceAfter.toString());
+        }
+
+        log.info("Top-up SUCCESS: PHP {} for passenger ID: {}",
+                amount, passenger.getId());
+
+        return new TopUpCompletion(amount, balanceAfter);
+    }
+
+    private String extractPaidLinkId(String rawBody) {
+        try {
+            JsonNode root = objectMapper.readTree(rawBody);
+            JsonNode attributes = root.path("data").path("attributes");
+            String eventType = attributes.path("type").asText("");
+
+            if (!eventType.contains("payment.paid")) {
+                return null;
+            }
+
+            JsonNode resource = attributes.path("data");
+            String resourceId = resource.path("id").asText("");
+            if (resourceId.startsWith("link_")) {
+                return resourceId;
+            }
+
+            return findFirstText(
+                    resource.isMissingNode() ? attributes : resource,
+                    "link_id",
+                    "payment_link_id",
+                    "payment_link");
+        } catch (Exception e) {
+            log.warn("Unable to parse PayMongo webhook payload: {}",
+                    e.getMessage());
+            return null;
+        }
+    }
+
+    private String findFirstText(JsonNode node, String... fieldNames) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+
+        if (node.isObject()) {
+            for (String fieldName : fieldNames) {
+                JsonNode child = node.get(fieldName);
+                if (child != null && child.isTextual()
+                        && !child.asText().isBlank()) {
+                    return child.asText();
+                }
+            }
+
+            Iterator<JsonNode> fields = node.elements();
+            while (fields.hasNext()) {
+                String value = findFirstText(fields.next(), fieldNames);
+                if (value != null) {
+                    return value;
+                }
+            }
+        }
+
+        if (node.isArray()) {
+            for (JsonNode child : node) {
+                String value = findFirstText(child, fieldNames);
+                if (value != null) {
+                    return value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private record TopUpCompletion(
+            BigDecimal amount,
+            BigDecimal balanceAfter) {}
 
     private boolean isValidWebhookSignature(String rawBody, String signature) {
         if (webhookSecret == null || webhookSecret.isBlank()) {

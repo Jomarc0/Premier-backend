@@ -33,6 +33,7 @@ public class RfidTapService {
     // Repositories
     private final PassengerRepository   passengerRepository;
     private final TransactionRepository transactionRepository;
+    private final FirebaseService firebaseService;
 
 
     private final Map<String, LocalDateTime> cooldownMap = new ConcurrentHashMap<>();
@@ -114,6 +115,14 @@ public class RfidTapService {
                 .build();
 
         transactionRepository.save(transaction);
+
+        if (passenger.getFcmToken() != null) {
+            firebaseService.sendFareDeduction(
+                    passenger.getFcmToken(),
+                    FIXED_FARE.toString(),
+                    balanceAfter.toString(),
+                    "RFID");
+        }
 
         // Build and return response
         RfidTapResponse data = RfidTapResponse.builder()

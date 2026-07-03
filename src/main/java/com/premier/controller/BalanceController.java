@@ -1,6 +1,7 @@
 package com.premier.controller;
 
 import com.premier.model.Passenger;
+import com.premier.response.ApiResponse;
 import com.premier.service.BalanceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -20,7 +21,8 @@ public class BalanceController {
 
         if (passenger == null) {
             return ResponseEntity.status(401)
-                .body("Unauthorized - please login again");
+                .body(ApiResponse.error(
+                    "Unauthorized - please login again"));
         }
 
         return ResponseEntity.ok(

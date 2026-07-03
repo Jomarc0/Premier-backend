@@ -2,6 +2,7 @@ package com.premier.controller;
 
 import com.premier.request.TopUpRequestDto;
 import com.premier.model.Passenger;
+import com.premier.response.ApiResponse;
 import com.premier.service.PayMongoService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +23,10 @@ public class TopUpController {
     public ResponseEntity<?> initiateTopUp(
             @AuthenticationPrincipal Passenger passenger,
             @Valid @RequestBody TopUpRequestDto request) {
+        if (passenger == null) {
+            return unauthorizedPassenger();
+        }
+
         return ResponseEntity.ok(
                 payMongoService.initiateTopUp(passenger, request));
     }
@@ -31,6 +36,10 @@ public class TopUpController {
     public ResponseEntity<?> verifyPayment(
             @AuthenticationPrincipal Passenger passenger,
             @PathVariable String referenceNumber) {
+        if (passenger == null) {
+            return unauthorizedPassenger();
+        }
+
         return ResponseEntity.ok(
                 payMongoService.processPayment(passenger, referenceNumber));
     }
@@ -40,6 +49,10 @@ public class TopUpController {
     public ResponseEntity<?> checkStatus(
             @AuthenticationPrincipal Passenger passenger,
             @PathVariable String referenceNumber) {
+        if (passenger == null) {
+            return unauthorizedPassenger();
+        }
+
         return ResponseEntity.ok(
                 payMongoService.checkPaymentStatus(passenger, referenceNumber));
     }
@@ -56,6 +69,11 @@ public class TopUpController {
         } catch (SecurityException ex) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+    }
+
+    private ResponseEntity<?> unauthorizedPassenger() {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(ApiResponse.error("Unauthorized - please login again"));
     }
     
 }

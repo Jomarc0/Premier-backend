@@ -30,6 +30,19 @@ public class FareController {
         }
     }
 
+    @PostMapping("/nfc/token")
+    public ResponseEntity<?> generateMobileNfcToken(@AuthenticationPrincipal Passenger passenger) {
+        if (passenger == null) {
+            return ResponseEntity.status(401).body(ApiResponse.error("Unauthorized - please login again"));
+        }
+
+        try {
+            return ResponseEntity.ok(farePaymentService.generateMobileNfcToken(passenger));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @PostMapping("/nfc")
     public ResponseEntity<?> payByNfc(
             @AuthenticationPrincipal Passenger passenger,

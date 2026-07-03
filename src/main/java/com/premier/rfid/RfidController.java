@@ -4,6 +4,8 @@ import com.premier.driver.model.DriverShift;
 import com.premier.driver.model.ShiftStatus;
 import com.premier.driver.repository.DriverShiftRepository;
 import com.premier.driver.service.DriverService;
+import com.premier.device.security.DeviceContext;
+import com.premier.device.service.DeviceService;
 import com.premier.response.ApiResponse;
 import com.premier.service.FarePaymentService;
 import lombok.RequiredArgsConstructor;
@@ -23,38 +25,47 @@ public class RfidController {
     private final DriverShiftRepository driverShiftRepository;
     private final FarePaymentService farePaymentService;
     private final DriverService driverService;
+    private final DeviceService deviceService;
 
     private static final double SM_LIPA_LAT = 13.954781;
     private static final double SM_LIPA_LNG = 121.163096;
 
     @PostMapping("/tap")
-    public ResponseEntity<?> tapCard(@RequestBody Map<String, String> body) {
+    public ResponseEntity<?> tapCard(@RequestBody DeviceFareRequest request) {
         try {
             return ResponseEntity.ok(farePaymentService.processRfidPayment(
-                    body.get("rfidUid"),
-                    body.get("plateNumber")));
+                    request,
+                    DeviceContext.get()));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
     }
 
     @PostMapping("/qr/process")
-    public ResponseEntity<?> processQrFare(@RequestBody Map<String, String> body) {
+    public ResponseEntity<?> processQrFare(@RequestBody DeviceFareRequest request) {
         try {
             return ResponseEntity.ok(farePaymentService.processQrPayment(
-                    body.get("payload"),
-                    body.get("plateNumber")));
+                    request,
+                    DeviceContext.get()));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
     }
 
     @PostMapping("/nfc/tap")
-    public ResponseEntity<?> processNfcTap(@RequestBody Map<String, String> body) {
+    public ResponseEntity<?> processNfcTap(@RequestBody DeviceFareRequest request) {
         try {
+            String mobileNfcToken = request.getMobileNfcToken();
+            if ((mobileNfcToken == null || mobileNfcToken.isBlank())
+                    && request.getPayload() != null && !request.getPayload().isBlank()) {
+                return ResponseEntity.ok(farePaymentService.processMobileNfcTokenPayment(
+                        request,
+                        DeviceContext.get()));
+            }
+
             return ResponseEntity.ok(farePaymentService.processRfidPayment(
-                    body.get("rfidUid"),
-                    body.get("plateNumber")));
+                    request,
+                    DeviceContext.get()));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
@@ -69,8 +80,13 @@ public class RfidController {
     public ResponseEntity<?> updateDriverGps(@RequestBody Map<String, Object> body) {
         try {
             String plateNumber = ((String) body.get("plateNumber")).toUpperCase().trim();
+            deviceService.requirePlateAssignment(DeviceContext.get(), plateNumber);
             Double latitude = Double.valueOf(body.get("latitude").toString());
             Double longitude = Double.valueOf(body.get("longitude").toString());
+            deviceService.validateFreshNonce(
+                    DeviceContext.get(),
+                    (String) body.get("requestNonce"),
+                    (String) body.get("requestTimestamp"));
             if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
                 throw new IllegalArgumentException("Invalid GPS coordinates");
             }
@@ -83,8 +99,8 @@ public class RfidController {
                         driverShiftRepository.save(shift);
 
                         double distLipa = calculateDistance(latitude, longitude, SM_LIPA_LAT, SM_LIPA_LNG);
-                        log.info("GPS UPDATE: {} -> ({}, {}) | Lipa: {}km",
-                                plateNumber, latitude, longitude, String.format("%.1f", distLipa));
+                        log.info("GPS UPDATE: {} | Lipa: {}km",
+                                plateNumber, String.format("%.1f", distLipa));
                     });
 
             return ResponseEntity.ok(Map.of("status", "GPS updated", "plateNumber", plateNumber));

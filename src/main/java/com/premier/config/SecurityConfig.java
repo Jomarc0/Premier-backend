@@ -11,8 +11,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.header.writers.StaticHeadersWriter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.*;
@@ -40,11 +39,6 @@ public class SecurityConfig {
     }
 
     @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
-    }
-
-    @Bean
     @Order(1)
     public SecurityFilterChain filterChain(HttpSecurity http)
             throws Exception {
@@ -55,6 +49,22 @@ public class SecurityConfig {
             .headers(headers -> headers
                 .contentTypeOptions(contentType -> {})
                 .frameOptions(frame -> frame.deny())
+                .contentSecurityPolicy(csp -> csp.policyDirectives(
+                    "default-src 'self'; " +
+                    "script-src 'self'; " +
+                    "style-src 'self' 'unsafe-inline'; " +
+                    "img-src 'self' data: https:; " +
+                    "font-src 'self' data:; " +
+                    "connect-src 'self' https://premiertranspo.onrender.com " +
+                    "https://premierusers.vercel.app https://premierrfid.vercel.app " +
+                    "https://premierdriver.vercel.app https://premieradmin.vercel.app " +
+                    "https://premier-staff.vercel.app; " +
+                    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"))
+                .referrerPolicy(referrer -> referrer
+                    .policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+                .addHeaderWriter(new StaticHeadersWriter("Permissions-Policy",
+                    "camera=(), microphone=(), geolocation=(self), payment=(self), usb=(), bluetooth=()"))
+                .cacheControl(cache -> {})
                 .httpStrictTransportSecurity(hsts -> hsts
                     .includeSubDomains(true)
                     .preload(true)
@@ -86,11 +96,18 @@ public class SecurityConfig {
                     "/actuator/health"
                 ).permitAll()
 
-                .requestMatchers("/api/rfid/**")
-                    .hasAuthority("RFID_TERMINAL")
+                .requestMatchers(HttpMethod.GET, "/api/rfid/vehicles")
+                    .permitAll()
+
+                .requestMatchers(
+                    "/api/rfid/tap",
+                    "/api/rfid/qr/process",
+                    "/api/rfid/nfc/tap",
+                    "/api/rfid/driver/gps")
+                    .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
 
                 .requestMatchers("/api/driver/location", "/api/driver/gps")
-                    .hasAnyAuthority("ROLE_DRIVER", "DEVICE")
+                    .hasAuthority("ROLE_DRIVER")
 
                 .requestMatchers(
                     "/api/driver/shift/**",
@@ -117,6 +134,8 @@ public class SecurityConfig {
                     "/api/admin/logs",
                     "/api/admin/logs/**",
                     "/api/admin/logs/stats",
+                    "/api/admin/devices",
+                    "/api/admin/devices/**",
                     "/api/admin/manage-admins",
                     "/api/admin/manage-admins/**"
                 ).hasAuthority("SUPER_ADMIN")

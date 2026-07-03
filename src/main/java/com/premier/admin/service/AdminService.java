@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -24,6 +25,7 @@ import java.util.*;
 @Service
 @Slf4j
 public class AdminService {
+    private static final SecureRandom CARD_NUMBER_RANDOM = new SecureRandom();
 
     private final AdminRepository        adminRepository;
     private final AdminJwtUtil           adminJwtUtil;
@@ -265,7 +267,7 @@ public class AdminService {
 
         logActivity(admin, "APPROVE_TRANSACTION",
             "TRANSACTION", transactionId,
-            "Approved ₱" + tx.getAmount() +
+            "Approved PHP " + tx.getAmount() +
             " for passenger " + passenger.getId(),
             "localhost");
 
@@ -317,7 +319,22 @@ public class AdminService {
     @Transactional
     public ApiResponse<Map<String, Object>> addBalance(
             Admin admin, Long passengerId,
-            BigDecimal amount, String note) {
+            BigDecimal amount, String reason,
+            String ipAddress) {
+
+        if (amount == null
+                || amount.compareTo(new BigDecimal("1.00")) < 0
+                || amount.compareTo(new BigDecimal("10000.00")) > 0) {
+            throw new RuntimeException("Amount must be between 1.00 and 10000.00.");
+        }
+
+        if (reason == null || reason.trim().isEmpty()) {
+            throw new RuntimeException("Adjustment reason is required.");
+        }
+
+        if (amount.compareTo(new BigDecimal("5000.00")) >= 0 && !admin.isSuperAdmin()) {
+            throw new RuntimeException("Super Admin approval is required for adjustments of 5000.00 or more.");
+        }
 
         Passenger passenger = passengerRepository
             .findById(passengerId)
@@ -337,8 +354,14 @@ public class AdminService {
         tx.setAmount(amount);
         tx.setBalanceBefore(oldBalance);
         tx.setBalanceAfter(newBalance);
-        tx.setDescription("Admin top-up: " +
-            (note != null ? note : ""));
+        tx.setDescription("Admin balance adjustment: " +
+            reason.trim());
+        logActivity(admin, "ADD_BALANCE_DETAIL",
+            "PASSENGER", passengerId,
+            "Balance adjustment | amount: PHP " + amount +
+            " | " + oldBalance + " -> " + newBalance +
+            " | reason: " + reason.trim(),
+            ipAddress != null ? ipAddress : "unknown");
         tx.setReferenceNumber("ADMIN-" +
             UUID.randomUUID().toString()
                 .substring(0, 8).toUpperCase());
@@ -346,7 +369,7 @@ public class AdminService {
 
         logActivity(admin, "ADD_BALANCE",
             "PASSENGER", passengerId,
-            "Added ₱" + amount +
+            "Added PHP " + amount +
             " to passenger " + passengerId,
             "localhost");
 
@@ -354,6 +377,7 @@ public class AdminService {
         result.put("passengerId", passengerId);
         result.put("addedAmount", amount);
         result.put("newBalance",  newBalance);
+        result.put("reason", reason.trim());
         return ApiResponse.success("Balance added.", result);
     }
 
@@ -415,42 +439,73 @@ public class AdminService {
     @Transactional
     public ApiResponse<Passenger> createPassenger(
             Admin admin,
-            String cardNumber,
             String rfidUid,
-            BigDecimal initialBalance) {
+            String category) {
 
-        if (passengerRepository.existsByCardNumber(cardNumber))
-            throw new RuntimeException(
-                "Card number already registered.");
+        String normalizedUid = normalizeRfidUid(rfidUid);
+        PassengerCardCategory cardCategory = parseCardCategory(category);
 
-        if (rfidUid != null &&
-            passengerRepository.existsByRfidUid(rfidUid))
+        if (passengerRepository.existsByRfidUid(normalizedUid))
             throw new RuntimeException(
                 "RFID UID already registered.");
 
-        String totpSecret = totpService.generateSecret();
+        String cardNumber = generateUniqueCardNumber();
 
         Passenger passenger = Passenger.builder()
                 .cardNumber(cardNumber)
-                .rfidUid(rfidUid)
-                .balance(initialBalance != null
-                    ? initialBalance : BigDecimal.ZERO)
-                .twofaSecret(totpSecret)   
-                .is2FaEnabled(false)     
-                .status(PassengerStatus.ACTIVE)
+                .rfidUid(normalizedUid)
+                .balance(BigDecimal.ZERO)
+                .cardCategory(cardCategory)
+                .discountEligible(cardCategory != PassengerCardCategory.REGULAR)
+                .createdByAdminId(admin != null ? admin.getId() : null)
+                .is2FaEnabled(false)
+                .status(PassengerStatus.AVAILABLE)
                 .build();
 
         Passenger saved =
             passengerRepository.save(passenger);
 
-        logActivity(admin, "CREATE_USER",
+        logActivity(admin, "CREATE_RFID_CARD",
             "PASSENGER", saved.getId(),
-            "Created passenger — Card: " + cardNumber +
-            " | RFID: " + rfidUid,
+            "Created RFID card stock - Card: " + cardNumber +
+            " | Type: " + cardCategory,
             "localhost");
 
         return ApiResponse.success(
-            "Passenger created successfully.", saved);
+            "RFID card created successfully.", saved);
+    }
+
+    private String normalizeRfidUid(String rfidUid) {
+        if (rfidUid == null || rfidUid.isBlank()) {
+            throw new RuntimeException("RFID UID is required.");
+        }
+        String normalized = rfidUid.trim()
+                .replaceAll("[^A-Fa-f0-9]", "")
+                .toUpperCase();
+        if (normalized.length() < 4) {
+            throw new RuntimeException("RFID UID is invalid.");
+        }
+        return normalized;
+    }
+
+    private PassengerCardCategory parseCardCategory(String category) {
+        try {
+            return PassengerCardCategory.valueOf(
+                category == null ? "REGULAR" : category.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            throw new RuntimeException("Invalid card category.");
+        }
+    }
+
+    private String generateUniqueCardNumber() {
+        for (int attempt = 0; attempt < 50; attempt++) {
+            String cardNumber = String.valueOf(
+                1000000000L + CARD_NUMBER_RANDOM.nextInt(900000000));
+            if (!passengerRepository.existsByCardNumber(cardNumber)) {
+                return cardNumber;
+            }
+        }
+        throw new RuntimeException("Unable to generate unique card number.");
     }
 
     // DRIVER MANAGEMENT

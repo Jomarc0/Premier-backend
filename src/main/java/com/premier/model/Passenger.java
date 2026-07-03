@@ -41,6 +41,18 @@ public class Passenger {
     @Column(name = "rfid_uid", unique = true)
     private String rfidUid;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "card_category")
+    @Builder.Default
+    private PassengerCardCategory cardCategory = PassengerCardCategory.REGULAR;
+
+    @Column(name = "discount_eligible")
+    @Builder.Default
+    private Boolean discountEligible = false;
+
+    @Column(name = "created_by_admin_id")
+    private Long createdByAdminId;
+
     @Column(name = "is_2fa_enabled", columnDefinition = "BIT(1) DEFAULT 0")
     @Builder.Default
     private Boolean is2FaEnabled = false;

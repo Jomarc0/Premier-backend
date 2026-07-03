@@ -51,7 +51,7 @@ public class DriverJwtAuthFilter extends OncePerRequestFilter {
 
         String token = authHeader.substring(7);
 
-        // Only process DRIVER tokens â€” passenger tokens handled
+        // Only process DRIVER tokens; passenger tokens are handled
         // by JwtAuthFilter downstream
         if (!driverJwtUtil.isDriverToken(token)) {
             chain.doFilter(request, response);

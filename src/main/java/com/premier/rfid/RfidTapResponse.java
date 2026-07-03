@@ -15,7 +15,11 @@ public class RfidTapResponse {
 
     private String rfidUid;
 
+    private BigDecimal baseFare;
+
     private BigDecimal deductedFare;
+
+    private String discountType;
 
     private BigDecimal remainingBalance;
 

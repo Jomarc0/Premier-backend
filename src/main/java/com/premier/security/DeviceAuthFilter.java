@@ -1,10 +1,12 @@
 package com.premier.security;
 
+import com.premier.device.security.DeviceContext;
+import com.premier.device.security.DevicePrincipal;
+import com.premier.device.service.DeviceService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -18,20 +20,24 @@ import java.util.List;
 @Component
 public class DeviceAuthFilter extends OncePerRequestFilter {
 
-    @Value("${premier.security.rfid-terminal-token:}")
-    private String rfidTerminalToken;
+    private final DeviceService deviceService;
 
-    @Value("${premier.security.driver-device-token:}")
-    private String driverDeviceToken;
+    public DeviceAuthFilter(DeviceService deviceService) {
+        this.deviceService = deviceService;
+    }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
         return HttpMethod.OPTIONS.matches(request.getMethod())
-                || !path.startsWith("/api/rfid/")
-                && !path.equals("/api/driver/login")
-                && !path.equals("/api/driver/location")
-                && !path.equals("/api/driver/gps");
+                || !requiresDeviceAuthentication(path);
+    }
+
+    private boolean requiresDeviceAuthentication(String path) {
+        return path.equals("/api/rfid/tap")
+                || path.equals("/api/rfid/qr/process")
+                || path.equals("/api/rfid/nfc/tap")
+                || path.equals("/api/rfid/driver/gps");
     }
 
     @Override
@@ -40,38 +46,18 @@ public class DeviceAuthFilter extends OncePerRequestFilter {
                                     FilterChain filterChain)
             throws ServletException, IOException {
 
-        String path = request.getServletPath();
-
-        if (path.startsWith("/api/rfid/")) {
-            if (!matchesToken(request.getHeader("X-Terminal-Token"), rfidTerminalToken)) {
-                sendUnauthorized(response, "RFID terminal authentication required.");
-                return;
-            }
-            setAuthority("RFID_TERMINAL");
-        } else if (path.equals("/api/driver/login")) {
-            if (!matchesToken(request.getHeader("X-Driver-Device-Token"), driverDeviceToken)) {
-                sendUnauthorized(response, "Driver device authentication required.");
-                return;
-            }
-        } else if (path.equals("/api/driver/location") || path.equals("/api/driver/gps")) {
-            String bearer = request.getHeader("Authorization");
-            if (bearer == null || !bearer.startsWith("Bearer ")) {
-                if (!matchesToken(request.getHeader("X-Driver-Device-Token"), driverDeviceToken)) {
-                    sendUnauthorized(response, "GPS device authentication required.");
-                    return;
-                }
-                setAuthority("DEVICE");
-            }
+        try {
+            DevicePrincipal principal = deviceService.authenticate(
+                    request.getHeader("X-Device-Id"),
+                    request.getHeader("X-Device-Token"));
+            DeviceContext.set(principal);
+            setAuthority("DEVICE_" + principal.deviceType().name());
+            filterChain.doFilter(request, response);
+        } catch (SecurityException e) {
+            sendUnauthorized(response, e.getMessage());
+        } finally {
+            DeviceContext.clear();
         }
-
-        filterChain.doFilter(request, response);
-    }
-
-    private boolean matchesToken(String provided, String expected) {
-        return expected != null
-                && !expected.isBlank()
-                && provided != null
-                && provided.equals(expected);
     }
 
     private void setAuthority(String authority) {

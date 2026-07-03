@@ -20,6 +20,8 @@ import java.util.stream.Collectors;
 @Slf4j
 public class LocationService {
 
+    private static final long LIVE_LOCATION_WINDOW_MINUTES = 5;
+
     private final DriverLocationRepository locationRepo;
     private final VehicleRepository        vehicleRepo;
     private final DriverShiftRepository    shiftRepo;
@@ -135,7 +137,11 @@ public class LocationService {
 
     // GET /live-locations
     public ApiResponse<List<Map<String, Object>>> getLiveLocations() {
-        List<DriverLocation> latest = locationRepo.findLatestPerPlate();
+        LocalDateTime freshAfter = LocalDateTime.now().minusMinutes(LIVE_LOCATION_WINDOW_MINUTES);
+        List<DriverLocation> latest = locationRepo.findLatestPerPlate().stream()
+                .filter(loc -> loc.getRecordedAt() != null
+                        && loc.getRecordedAt().isAfter(freshAfter))
+                .toList();
 
         List<Map<String, Object>> locations = latest.stream()
                 .map(loc -> {

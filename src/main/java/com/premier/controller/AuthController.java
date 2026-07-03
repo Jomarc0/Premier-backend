@@ -65,7 +65,7 @@ public class AuthController {
         } catch (Exception e) {
             return ResponseEntity.status(400)
                 .body(ApiResponse.error(
-                    "Failed: " + e.getMessage()));
+                    "Unable to prepare 2FA setup. Please login again."));
         }
     }
 

@@ -7,7 +7,11 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "transactions")
+@Table(name = "transactions",
+        uniqueConstraints = {
+                @UniqueConstraint(name = "uk_transactions_reference_number", columnNames = "reference_number"),
+                @UniqueConstraint(name = "uk_transactions_idempotency_key", columnNames = "idempotency_key")
+        })
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -41,7 +45,21 @@ public class Transaction {
     @Column(precision = 10, scale = 2)
     private BigDecimal balanceAfter;
 
+    @Column(name = "reference_number")
     private String referenceNumber;
+
+    @Column(name = "idempotency_key", length = 120)
+    private String idempotencyKey;
+
+    @Column(name = "device_id", length = 80)
+    private String deviceId;
+
+    @Column(name = "request_nonce", length = 120)
+    private String requestNonce;
+
+    @Column(name = "request_timestamp")
+    private LocalDateTime requestTimestamp;
+
     private String description;
 
     @Column(updatable = false)
