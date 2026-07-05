@@ -60,8 +60,8 @@ public class RfidController {
     public ResponseEntity<?> processNfcTap(@RequestBody DeviceFareRequest request) {
         try {
             String mobileNfcToken = request.getMobileNfcToken();
-            if ((mobileNfcToken == null || mobileNfcToken.isBlank())
-                    && request.getPayload() != null && !request.getPayload().isBlank()) {
+            if ((mobileNfcToken != null && !mobileNfcToken.isBlank())
+                    || (request.getPayload() != null && !request.getPayload().isBlank())) {
                 return ResponseEntity.ok(farePaymentService.processMobileNfcTokenPayment(
                         request,
                         DeviceContext.get()));
