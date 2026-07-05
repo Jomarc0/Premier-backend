@@ -2,7 +2,10 @@ package com.premier.controller;
 
 import com.premier.request.ChatRequest;
 import com.premier.response.ChatResponse;
+import com.premier.cardfreeze.model.CardFreezeRequestType;
+import com.premier.model.Passenger;
 import com.premier.service.DialogflowService;
+import com.premier.service.GeminiService;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import jakarta.servlet.http.HttpServletRequest;
@@ -12,10 +15,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -26,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatbotController {
 
     private final DialogflowService dialogflowService;
+    private final GeminiService geminiService;
 
     // In-memory per-user rate limiting: 20 msg/min
     private final Map<String, Bucket> buckets =
@@ -45,11 +49,11 @@ public class ChatbotController {
     @PostMapping("/message")
     public ResponseEntity<ChatResponse> handleMessage(
             @Valid @RequestBody ChatRequest request,
-            @AuthenticationPrincipal UserDetails userDetails,
+            @AuthenticationPrincipal Passenger passenger,
             HttpServletRequest httpRequest) {
 
-        String userId = (userDetails != null)
-            ? userDetails.getUsername()
+        String userId = (passenger != null)
+            ? String.valueOf(passenger.getId())
             : httpRequest.getRemoteAddr();
 
         Bucket bucket = resolveBucket(userId);
@@ -77,8 +81,37 @@ public class ChatbotController {
 
         log.info("Chat [{}]: {}", userId, sanitized);
 
+        if (isGeneralHelpRequest(sanitized)) {
+            return ResponseEntity.ok(ChatResponse.builder()
+                    .success(true)
+                    .reply("""
+                            I can help with top-ups, fare deductions, RFID card concerns, payment issues, and balance questions.
+
+                            For urgent help, contact Premier support:
+                            Phone: (02) 8888-171
+                            Hours: Monday to Saturday, 7:00 AM to 8:00 PM
+
+                            You can also visit any Premier terminal for in-person assistance.
+                            """.trim())
+                    .intent("LOCAL_GENERAL_HELP")
+                    .quickReplies(List.of("Top-up issue", "Fare deduction", "Payment failed", "Lost RFID card", "Check balance"))
+                    .sensitive(false)
+                    .build());
+        }
+
         ChatResponse response = dialogflowService
             .detectIntent(sanitized, request.getSessionId());
+
+        SensitiveIntent sensitiveIntent = detectSensitiveIntent(sanitized, response.getIntent());
+        if (sensitiveIntent != null) {
+            return ResponseEntity.ok(ChatResponse.builder()
+                    .success(true)
+                    .reply("For your security, please complete the card request form first. This helps the administrator verify whether the card should be frozen or updated.")
+                    .intent(sensitiveIntent.intentName())
+                    .sensitive(true)
+                    .recommendedAction("OPEN_CARD_REQUEST_FORM")
+                    .build());
+        }
 
         if (!response.isSuccess()) {
             response = ChatResponse.builder()
@@ -87,7 +120,53 @@ public class ChatbotController {
                 .build();
         }
 
+        String reply = response.getReply();
+        if (shouldUseGemini(sanitized, response)) {
+            reply = geminiService.enhanceSupportReply(sanitized, reply);
+        }
+        response.setReply(reply);
+        response.setSensitive(false);
+
         return ResponseEntity.ok(response);
+    }
+
+    private boolean shouldUseGemini(String message, ChatResponse response) {
+        String intent = response.getIntent() == null ? "" : response.getIntent().toLowerCase();
+        return intent.contains("fallback")
+                || intent.isBlank()
+                || message.length() > 120
+                || response.getReply() == null
+                || response.getReply().isBlank();
+    }
+
+    private SensitiveIntent detectSensitiveIntent(String message, String dialogflowIntent) {
+        String text = (message + " " + (dialogflowIntent == null ? "" : dialogflowIntent)).toLowerCase();
+        if (text.contains("stolen")) {
+            return new SensitiveIntent("STOLEN_CARD", CardFreezeRequestType.STOLEN);
+        }
+        if (text.contains("lost") || text.contains("missing")) {
+            return new SensitiveIntent("LOST_CARD", CardFreezeRequestType.LOST);
+        }
+        if (text.contains("freeze") || text.contains("block my card") || text.contains("deactivate my card")) {
+            return new SensitiveIntent("FREEZE_CARD_REQUEST", CardFreezeRequestType.FREEZE_REQUEST);
+        }
+        if (text.contains("change card") || text.contains("card change") || text.contains("update card")) {
+            return new SensitiveIntent("CARD_UPDATE_REQUEST", CardFreezeRequestType.CARD_UPDATE);
+        }
+        return null;
+    }
+
+    private record SensitiveIntent(String intentName, CardFreezeRequestType type) {}
+
+    private boolean isGeneralHelpRequest(String message) {
+        String text = message == null ? "" : message.toLowerCase();
+        return text.equals("help")
+                || text.equals("i want help")
+                || text.equals("i need help")
+                || text.equals("can you help me")
+                || text.contains("customer support")
+                || text.contains("contact support")
+                || text.contains("support hotline");
     }
 
     private String sanitize(String input) {
@@ -102,26 +181,26 @@ public class ChatbotController {
         String m = msg.toLowerCase();
         if (m.contains("top-up") || m.contains("topup") ||
             m.contains("recharge") || m.contains("load"))
-            return "💳 For top-up issues, ensure payment was " +
-                "completed. Balances reflect within 5-10 minutes.";
+            return "For top-up issues, make sure the payment was completed. " +
+                "Balances usually reflect within 5-10 minutes.";
         if (m.contains("fare") || m.contains("deduct"))
-            return "🚌 Fare deductions are automatic on tap. " +
-                "Disputes reviewed within 24 hours.";
+            return "Fare deductions are automatic after a valid tap. " +
+                "Fare disputes are reviewed within 24 hours.";
         if (m.contains("payment") || m.contains("failed"))
-            return "❌ Check your GCash/Maya balance and try " +
-                "again. Still failing? Call (123) 456-7890.";
+            return "Check your GCash or Maya payment status and try again. " +
+                "If it still fails, call (02) 8888-171.";
         if (m.contains("lost") || m.contains("rfid") ||
             m.contains("card"))
-            return "🪪 Report lost cards at (123) 456-7890 " +
-                "to block and replace immediately.";
+            return "Report lost RFID cards at (02) 8888-171 so staff can " +
+                "block and replace the card.";
         if (m.contains("balance") || m.contains("check"))
-            return "💰 Your balance is on your dashboard " +
+            return "Your balance is on your dashboard " +
                 "and updates after every transaction.";
         if (m.contains("hello") || m.contains("hi") ||
             m.contains("hey"))
-            return "👋 Hello! Ask me about top-ups, fares, " +
+            return "Hello! Ask me about top-ups, fares, " +
                 "RFID cards, or payments!";
-        return "🤖 A support agent will respond within 24 hrs. " +
-            "Urgent? Call (123) 456-7890.";
+        return "A support agent will respond within 24 hours. " +
+            "For urgent concerns, call (02) 8888-171.";
     }
 }

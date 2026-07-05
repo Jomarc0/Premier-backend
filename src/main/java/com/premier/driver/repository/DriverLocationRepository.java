@@ -17,6 +17,10 @@ public interface DriverLocationRepository extends JpaRepository<DriverLocation, 
     Optional<DriverLocation> findTopByPlateNumberOrderByRecordedAtDesc(String plateNumber);
     
     List<DriverLocation> findByShiftIdOrderByRecordedAtAsc(Long shiftId);
+
+    List<DriverLocation> findByPlateNumberAndRecordedAtGreaterThanEqualOrderByRecordedAtAsc(
+            String plateNumber,
+            LocalDateTime recordedAt);
     
     @Query("""
         SELECT dl FROM DriverLocation dl

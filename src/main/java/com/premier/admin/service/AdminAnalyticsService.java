@@ -46,6 +46,7 @@ public class AdminAnalyticsService {
         List<DriverShift> shifts = driverShiftRepository.findAll();
         List<PassengerOnboard> onboards = passengerOnboardRepository.findAll();
         List<DriverLocation> locations = driverLocationRepository.findAll();
+        Map<String, DriverLocation> latestLocationByPlate = latestLocationByPlate(locations);
 
         List<Transaction> txInRange = transactions.stream()
                 .filter(tx -> inWindow(tx.getCreatedAt(), window))
@@ -71,12 +72,13 @@ public class AdminAnalyticsService {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("filters", filters(window, range, route, bus));
         data.put("executive", executive(passengers, txInRange, transactions, vehicles, shiftsInRange,
-                onboardsInRange));
+                onboardsInRange, latestLocationByPlate));
         data.put("passengerAnalytics", passengerAnalytics(passengers, txInRange, onboardsInRange, window));
         data.put("rfidAnalytics", rfidAnalytics(passengers, txInRange));
         data.put("revenueAnalytics", revenueAnalytics(txInRange, onboardsInRange, window));
         data.put("topUpAnalytics", topUpAnalytics(topUpsInRange, txInRange, window));
-        data.put("busAnalytics", busAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange));
+        data.put("busAnalytics", busAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange,
+                latestLocationByPlate));
         data.put("gpsAnalytics", gpsAnalytics(locationsInRange, vehicles));
         data.put("queueTerminalAnalytics", queueTerminalAnalytics(vehicles, onboardsInRange));
         data.put("routeAnalytics", routeAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange));
@@ -90,7 +92,8 @@ public class AdminAnalyticsService {
     private Map<String, Object> executive(List<Passenger> passengers, List<Transaction> txInRange,
                                           List<Transaction> allTransactions, List<Vehicle> vehicles,
                                           List<DriverShift> shiftsInRange,
-                                          List<PassengerOnboard> onboardsInRange) {
+                                          List<PassengerOnboard> onboardsInRange,
+                                          Map<String, DriverLocation> latestLocationByPlate) {
         LocalDate today = LocalDate.now();
         LocalDate weekStart = today.with(WeekFields.ISO.dayOfWeek(), 1);
         LocalDate monthStart = today.withDayOfMonth(1);
@@ -111,8 +114,8 @@ public class AdminAnalyticsService {
                 "revenueThisMonth", revenueMonth,
                 "activeBuses", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE).count(),
                 "busesOnRoute", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE
-                        && !atTerminal(v)).count(),
-                "busesAtTerminal", vehicles.stream().filter(this::atTerminal).count(),
+                        && !atTerminal(v, latestLocationByPlate)).count(),
+                "busesAtTerminal", vehicles.stream().filter(v -> atTerminal(v, latestLocationByPlate)).count(),
                 "totalTripsToday", shiftsInRange.stream().filter(s -> sameDay(s.getShiftStart(), today)).count(),
                 "averageWaitingTimeMinutes", null,
                 "averageArrivalTimeMinutes", avgTripMinutes(onboardsInRange)
@@ -229,7 +232,8 @@ public class AdminAnalyticsService {
     }
 
     private Map<String, Object> busAnalytics(List<Vehicle> vehicles, List<DriverShift> shiftsInRange,
-                                             List<PassengerOnboard> onboardsInRange, List<Transaction> txInRange) {
+                                             List<PassengerOnboard> onboardsInRange, List<Transaction> txInRange,
+                                             Map<String, DriverLocation> latestLocationByPlate) {
         Map<String, Long> tripsPerBus = shiftsInRange.stream()
                 .collect(Collectors.groupingBy(s -> s.getVehicle().getPlateNumber(), Collectors.counting()));
         Map<String, Integer> passengersPerBus = onboardsInRange.stream()
@@ -239,11 +243,12 @@ public class AdminAnalyticsService {
                 .collect(Collectors.groupingBy(o -> o.getShift().getVehicle().getPlateNumber(),
                         Collectors.reducing(BigDecimal.ZERO, PassengerOnboard::getFare, BigDecimal::add)));
         return mapOf(
-                "summary", mapOf(
+                        "summary", mapOf(
                         "totalBuses", vehicles.size(),
                         "activeBuses", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE).count(),
-                        "busesOnRoute", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE && !atTerminal(v)).count(),
-                        "busesAtTerminal", vehicles.stream().filter(this::atTerminal).count(),
+                        "busesOnRoute", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE
+                                && !atTerminal(v, latestLocationByPlate)).count(),
+                        "busesAtTerminal", vehicles.stream().filter(v -> atTerminal(v, latestLocationByPlate)).count(),
                         "mostUtilizedBus", topInteger(passengersPerBus),
                         "leastUtilizedBus", bottomInteger(passengersPerBus),
                         "highestRevenueBus", topBigDecimal(revenuePerBus),
@@ -481,10 +486,28 @@ public class AdminAnalyticsService {
         return bus == null || bus.isBlank() || (vehicle != null && bus.equalsIgnoreCase(vehicle.getPlateNumber()));
     }
 
-    private boolean atTerminal(Vehicle vehicle) {
-        return vehicle.getLatitude() != null && vehicle.getLongitude() != null
-                && (distance(vehicle.getLatitude(), vehicle.getLongitude(), 13.954781, 121.163096) <= 5.0
-                || distance(vehicle.getLatitude(), vehicle.getLongitude(), 13.790391, 121.062721) <= 5.0);
+    private Map<String, DriverLocation> latestLocationByPlate(List<DriverLocation> locations) {
+        return locations.stream()
+                .filter(location -> location.getPlateNumber() != null && location.getRecordedAt() != null)
+                .collect(Collectors.toMap(
+                        location -> location.getPlateNumber().toUpperCase(),
+                        Function.identity(),
+                        (existing, replacement) -> replacement.getRecordedAt().isAfter(existing.getRecordedAt())
+                                ? replacement
+                                : existing
+                ));
+    }
+
+    private boolean atTerminal(Vehicle vehicle, Map<String, DriverLocation> latestLocationByPlate) {
+        if (vehicle == null || vehicle.getPlateNumber() == null) {
+            return false;
+        }
+        DriverLocation location = latestLocationByPlate.get(vehicle.getPlateNumber().toUpperCase());
+        return location != null
+                && location.getLatitude() != null
+                && location.getLongitude() != null
+                && (distance(location.getLatitude(), location.getLongitude(), 13.954781, 121.163096) <= 5.0
+                || distance(location.getLatitude(), location.getLongitude(), 13.790391, 121.062721) <= 5.0);
     }
 
     private String safeRoute(Vehicle vehicle) {

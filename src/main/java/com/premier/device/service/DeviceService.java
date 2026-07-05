@@ -6,6 +6,8 @@ import com.premier.device.repository.DeviceRepository;
 import com.premier.device.request.AdminDeviceRequest;
 import com.premier.device.response.DeviceProvisioningResponse;
 import com.premier.device.security.DevicePrincipal;
+import com.premier.driver.model.Vehicle;
+import com.premier.driver.repository.VehicleRepository;
 import com.premier.response.ApiResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -24,6 +26,7 @@ public class DeviceService {
     private static final Duration MAX_CLOCK_SKEW = Duration.ofMinutes(5);
     private final DeviceRepository deviceRepository;
     private final DeviceNonceRepository nonceRepository;
+    private final VehicleRepository vehicleRepository;
     private final PasswordEncoder passwordEncoder;
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -108,12 +111,13 @@ public class DeviceService {
             throw new RuntimeException("Device ID already exists.");
         }
         String rawToken = generateToken();
+        String assignedPlate = resolveAssignedPlate(request.getVehicleId(), request.getPlateNumber());
         Device device = Device.builder()
                 .deviceId(request.getDeviceId().trim())
                 .deviceName(request.getDeviceName().trim())
                 .deviceType(request.getDeviceType())
                 .vehicleId(request.getVehicleId())
-                .plateNumber(normalizePlate(request.getPlateNumber()))
+                .plateNumber(assignedPlate)
                 .tokenHash(passwordEncoder.encode(rawToken))
                 .status(request.getStatus() != null ? request.getStatus() : DeviceStatus.ACTIVE)
                 .build();
@@ -130,7 +134,7 @@ public class DeviceService {
         if (!isBlank(request.getDeviceName())) device.setDeviceName(request.getDeviceName().trim());
         if (request.getDeviceType() != null) device.setDeviceType(request.getDeviceType());
         device.setVehicleId(request.getVehicleId());
-        device.setPlateNumber(normalizePlate(request.getPlateNumber()));
+        device.setPlateNumber(resolveAssignedPlate(request.getVehicleId(), request.getPlateNumber()));
         if (request.getStatus() != null) device.setStatus(request.getStatus());
         deviceRepository.save(device);
         return ApiResponse.success("Device updated.", toResponse(device));
@@ -191,6 +195,15 @@ public class DeviceService {
 
     private String normalizePlate(String plateNumber) {
         return isBlank(plateNumber) ? null : plateNumber.trim().toUpperCase();
+    }
+
+    private String resolveAssignedPlate(Long vehicleId, String fallbackPlateNumber) {
+        if (vehicleId == null) {
+            return normalizePlate(fallbackPlateNumber);
+        }
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
+                .orElseThrow(() -> new RuntimeException("Vehicle not found."));
+        return normalizePlate(vehicle.getPlateNumber());
     }
 
     private boolean isBlank(String value) {

@@ -356,9 +356,15 @@ public class DriverService {
                 .orElseThrow(() -> new RuntimeException(
                         "Vehicle not found."));
 
-        vehicle.setLatitude(latitude);
-        vehicle.setLongitude(longitude);
-        vehicleRepository.save(vehicle);
+        DriverLocation loc = DriverLocation.builder()
+                .plateNumber(vehicle.getPlateNumber())
+                .latitude(latitude)
+                .longitude(longitude)
+                .speed(0.0)
+                .heading(0.0)
+                .recordedAt(LocalDateTime.now())
+                .build();
+        driverLocationRepository.save(loc);
 
         return ApiResponse.success("GPS updated.", "OK");
     }
@@ -412,28 +418,16 @@ public class DriverService {
             //Get latest location for this vehicle
             DriverLocation latestLoc = latestLocMap.get(vehicle.getPlateNumber());
             boolean hasFreshLocation = isFreshLocation(latestLoc);
-            Double lat = hasFreshLocation ? latestLoc.getLatitude() : vehicle.getLatitude();
-            Double lng = hasFreshLocation ? latestLoc.getLongitude() : vehicle.getLongitude();
+            Double lat = latestLoc != null ? latestLoc.getLatitude() : null;
+            Double lng = latestLoc != null ? latestLoc.getLongitude() : null;
 
             Map<String, Object> bus = new HashMap<>();
             bus.put("vehicleId", vehicle.getId());
             bus.put("plateNumber", vehicle.getPlateNumber());
             bus.put("driverName", driverName);
 
-            // Default fallback locations
-            if (vehicle.getRoute() != null &&
-                vehicle.getRoute().toUpperCase().contains("LIPA")) {
-
-                // SM Lipa fallback
-                bus.put("latitude", lat != null ? lat : SM_TERMINAL_LAT);
-                bus.put("longitude", lng != null ? lng : SM_TERMINAL_LNG);
-
-            } else {
-
-                // Grand Terminal fallback
-                bus.put("latitude", lat != null ? lat : GRAND_TERMINAL_LAT);
-                bus.put("longitude", lng != null ? lng : GRAND_TERMINAL_LNG);
-            }
+            bus.put("latitude", lat);
+            bus.put("longitude", lng);
 
             String routeDirection = routeForLocation(lat, lng, vehicle.getRoute());
             double speedKmh = hasFreshLocation && latestLoc.getSpeed() != null && latestLoc.getSpeed() > 0

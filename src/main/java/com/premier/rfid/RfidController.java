@@ -1,9 +1,12 @@
 package com.premier.rfid;
 
+import com.premier.driver.model.DriverLocation;
 import com.premier.driver.model.DriverShift;
 import com.premier.driver.model.ShiftStatus;
+import com.premier.driver.model.VehicleStatus;
+import com.premier.driver.repository.DriverLocationRepository;
 import com.premier.driver.repository.DriverShiftRepository;
-import com.premier.driver.service.DriverService;
+import com.premier.driver.repository.VehicleRepository;
 import com.premier.device.security.DeviceContext;
 import com.premier.device.service.DeviceService;
 import com.premier.response.ApiResponse;
@@ -24,8 +27,9 @@ public class RfidController {
 
     private final DriverShiftRepository driverShiftRepository;
     private final FarePaymentService farePaymentService;
-    private final DriverService driverService;
+    private final VehicleRepository vehicleRepository;
     private final DeviceService deviceService;
+    private final DriverLocationRepository driverLocationRepository;
 
     private static final double SM_LIPA_LAT = 13.954781;
     private static final double SM_LIPA_LNG = 121.163096;
@@ -73,7 +77,9 @@ public class RfidController {
 
     @GetMapping("/vehicles")
     public ResponseEntity<?> getTerminalVehicles() {
-        return ResponseEntity.ok(driverService.getAllVehicles());
+        return ResponseEntity.ok(ApiResponse.success(
+                "Active terminal vehicles fetched.",
+                vehicleRepository.findByStatus(VehicleStatus.ACTIVE)));
     }
 
     @PostMapping("/driver/gps")
@@ -91,8 +97,8 @@ public class RfidController {
                 throw new IllegalArgumentException("Invalid GPS coordinates");
             }
 
-            driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
-                    .ifPresent(shift -> {
+            Long shiftId = driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
+                    .map(shift -> {
                         shift.setCurrentLatitude(latitude);
                         shift.setCurrentLongitude(longitude);
                         shift.setLastLocationUpdate(LocalDateTime.now());
@@ -101,7 +107,19 @@ public class RfidController {
                         double distLipa = calculateDistance(latitude, longitude, SM_LIPA_LAT, SM_LIPA_LNG);
                         log.info("GPS UPDATE: {} | Lipa: {}km",
                                 plateNumber, String.format("%.1f", distLipa));
-                    });
+                        return shift.getId();
+                    })
+                    .orElse(null);
+
+            driverLocationRepository.save(DriverLocation.builder()
+                    .plateNumber(plateNumber)
+                    .shiftId(shiftId)
+                    .latitude(latitude)
+                    .longitude(longitude)
+                    .speed(0.0)
+                    .heading(0.0)
+                    .recordedAt(LocalDateTime.now())
+                    .build());
 
             return ResponseEntity.ok(Map.of("status", "GPS updated", "plateNumber", plateNumber));
         } catch (Exception e) {

@@ -55,8 +55,6 @@ public class LocationService {
             String geofence = checkGeofence(req.getLatitude(), req.getLongitude());
             Optional<String> updatedRoute = routeForTerminal(geofence);
 
-            vehicle.setLatitude(req.getLatitude());
-            vehicle.setLongitude(req.getLongitude());
             updatedRoute.ifPresent(vehicle::setRoute);
             vehicleRepo.save(vehicle);
 
@@ -164,6 +162,41 @@ public class LocationService {
     public ApiResponse<List<DriverLocation>> getShiftHistory(Long shiftId) {
         List<DriverLocation> history = locationRepo.findByShiftIdOrderByRecordedAtAsc(shiftId);
         return ApiResponse.success("Shift history (" + history.size() + " points).", history);
+    }
+
+    public ApiResponse<List<Map<String, Object>>> getPlateHistory(String plateNumber, String range) {
+        String normalizedPlate = plateNumber == null ? "" : plateNumber.trim().toUpperCase();
+        LocalDateTime since = historyStart(range);
+
+        List<Map<String, Object>> history = locationRepo
+                .findByPlateNumberAndRecordedAtGreaterThanEqualOrderByRecordedAtAsc(normalizedPlate, since)
+                .stream()
+                .map(loc -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("id", loc.getId());
+                    m.put("plateNumber", loc.getPlateNumber());
+                    m.put("latitude", loc.getLatitude());
+                    m.put("longitude", loc.getLongitude());
+                    m.put("speed", loc.getSpeed());
+                    m.put("heading", loc.getHeading());
+                    m.put("recordedAt", loc.getRecordedAt() != null ? loc.getRecordedAt().toString() : null);
+                    return m;
+                })
+                .toList();
+
+        return ApiResponse.success("Location history (" + history.size() + " points).", history);
+    }
+
+    private LocalDateTime historyStart(String range) {
+        String normalized = range == null ? "day" : range.trim().toLowerCase();
+        LocalDateTime now = LocalDateTime.now();
+
+        return switch (normalized) {
+            case "hour" -> now.minusHours(1);
+            case "week" -> now.minusDays(7);
+            case "day", "today" -> now.toLocalDate().atStartOfDay();
+            default -> now.toLocalDate().atStartOfDay();
+        };
     }
 
 

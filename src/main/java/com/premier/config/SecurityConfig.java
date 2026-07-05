@@ -84,6 +84,7 @@ public class SecurityConfig {
                     "/api/passenger/auth/login",
                     "/api/passenger/auth/verify-totp",
                     "/api/passenger/auth/totp/setup",
+                    "/api/passenger/chat/message",
                     "/api/passenger/topup/webhook",
                     // Admin public
                     "/api/admin/auth/login",
@@ -122,12 +123,9 @@ public class SecurityConfig {
                     "/api/driver/drivers",
                     "/api/driver/live-locations",
                     "/api/driver/shift-history/**",
+                    "/api/driver/location-history/**",
                     "/api/staff/**"
                 ).hasAnyAuthority("STAFF", "ADMIN", "SUPER_ADMIN")
-
-                // Chatbot 
-                .requestMatchers("/api/passenger/chat/**")
-                .authenticated()              
 
                 //Super Admin only 
                 .requestMatchers(

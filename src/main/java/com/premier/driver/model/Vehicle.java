@@ -31,13 +31,6 @@ public class Vehicle {
     @Builder.Default
     private VehicleStatus status = VehicleStatus.INACTIVE;
 
-    // GPS coordinates
-    @Column
-    private Double latitude;
-
-    @Column
-    private Double longitude;
-
     @Column(updatable = false)
     private LocalDateTime createdAt;
 

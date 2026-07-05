@@ -126,6 +126,7 @@ public class AdminService {
         data.put("username", admin.getUsername());
         data.put("role",     admin.getRole().name());
         data.put("requiresTotp", false);
+        data.put("is2FaEnabled", Boolean.TRUE.equals(admin.getIs2FaEnabled()));
 
         logActivity(admin, "LOGIN", "ADMIN",
             admin.getId(),

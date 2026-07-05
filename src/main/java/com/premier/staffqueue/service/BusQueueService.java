@@ -66,8 +66,9 @@ public class BusQueueService {
 
     private QueueCandidate toCandidate(Vehicle vehicle, String routeDirection) {
         String plateNumber = vehicle.getPlateNumber();
+        Optional<DriverLocation> latestLocation = latestLocation(plateNumber);
 
-        if (vehicle.getLatitude() == null || vehicle.getLongitude() == null) {
+        if (latestLocation.isEmpty()) {
             return new QueueCandidate(
                     plateNumber,
                     routeDirection,
@@ -76,6 +77,7 @@ public class BusQueueService {
                     BusQueueStatus.DEPARTED
             );
         }
+        DriverLocation location = latestLocation.get();
 
         boolean incomingToSm = GRAND_TO_SM.equals(routeDirection);
         double destinationLat = incomingToSm ? smTerminalLatitude : grandTerminalLatitude;
@@ -84,14 +86,14 @@ public class BusQueueService {
         double originLng = incomingToSm ? grandTerminalLongitude : smTerminalLongitude;
 
         double distanceKm = round1(distanceKm(
-                vehicle.getLatitude(),
-                vehicle.getLongitude(),
+                location.getLatitude(),
+                location.getLongitude(),
                 destinationLat,
                 destinationLng
         ));
         double originDistanceKm = round1(distanceKm(
-                vehicle.getLatitude(),
-                vehicle.getLongitude(),
+                location.getLatitude(),
+                location.getLongitude(),
                 originLat,
                 originLng
         ));
@@ -108,19 +110,21 @@ public class BusQueueService {
     }
 
     private String routeForVehicle(Vehicle vehicle) {
-        if (vehicle.getLatitude() == null || vehicle.getLongitude() == null) {
+        Optional<DriverLocation> latestLocation = latestLocation(vehicle.getPlateNumber());
+        if (latestLocation.isEmpty()) {
             return normalizedRouteOrDefault(vehicle.getRoute());
         }
+        DriverLocation location = latestLocation.get();
 
         double distanceToSm = distanceKm(
-                vehicle.getLatitude(),
-                vehicle.getLongitude(),
+                location.getLatitude(),
+                location.getLongitude(),
                 smTerminalLatitude,
                 smTerminalLongitude
         );
         double distanceToGrand = distanceKm(
-                vehicle.getLatitude(),
-                vehicle.getLongitude(),
+                location.getLatitude(),
+                location.getLongitude(),
                 grandTerminalLatitude,
                 grandTerminalLongitude
         );
@@ -141,9 +145,14 @@ public class BusQueueService {
     }
 
     private Optional<Double> latestSpeedKmh(String plateNumber) {
-        return locationRepository.findTopByPlateNumberOrderByRecordedAtDesc(plateNumber)
+        return latestLocation(plateNumber)
                 .map(DriverLocation::getSpeed)
                 .filter(speed -> speed != null && speed > 0);
+    }
+
+    private Optional<DriverLocation> latestLocation(String plateNumber) {
+        return locationRepository.findTopByPlateNumberOrderByRecordedAtDesc(plateNumber)
+                .filter(location -> location.getLatitude() != null && location.getLongitude() != null);
     }
 
     private List<BusQueueItemResponse> numberQueue(List<QueueCandidate> candidates) {

@@ -70,7 +70,7 @@ public class FarePaymentService {
                 .orElseThrow(() -> new RuntimeException("Passenger not found."));
 
         if (passenger.getStatus() != PassengerStatus.ACTIVE) {
-            throw new RuntimeException("Account is " + passenger.getStatus().name().toLowerCase() + ".");
+            throw new RuntimeException("This RFID card is currently inactive or frozen. Please contact Premier Transport support.");
         }
 
         expireExistingQrTokens(passenger.getId());

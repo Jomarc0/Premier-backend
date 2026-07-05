@@ -127,4 +127,12 @@ public class DriverController {
         return ResponseEntity.ok(
                 locationService.getShiftHistory(shiftId));
     }
+
+    @GetMapping("/location-history/{plateNumber}")
+    public ResponseEntity<?> getLocationHistory(
+            @PathVariable String plateNumber,
+            @RequestParam(defaultValue = "day") String range) {
+        return ResponseEntity.ok(
+                locationService.getPlateHistory(plateNumber, range));
+    }
 }
