@@ -30,6 +30,7 @@ public class RfidController {
     private final VehicleRepository vehicleRepository;
     private final DeviceService deviceService;
     private final DriverLocationRepository driverLocationRepository;
+    private final RfidUidCaptureService rfidUidCaptureService;
 
     private static final double SM_LIPA_LAT = 13.954781;
     private static final double SM_LIPA_LNG = 121.163096;
@@ -80,6 +81,27 @@ public class RfidController {
         return ResponseEntity.ok(ApiResponse.success(
                 "Active terminal vehicles fetched.",
                 vehicleRepository.findByStatus(VehicleStatus.ACTIVE)));
+    }
+
+    @GetMapping("/registration/uid-request")
+    public ResponseEntity<?> getPendingUidCaptureRequest() {
+        return ResponseEntity.ok(rfidUidCaptureService.nextForDevice(DeviceContext.get()));
+    }
+
+    @PostMapping("/registration/uid-capture")
+    public ResponseEntity<?> submitUidCapture(@RequestBody Map<String, Object> body) {
+        try {
+            deviceService.validateFreshNonce(
+                    DeviceContext.get(),
+                    (String) body.get("requestNonce"),
+                    (String) body.get("requestTimestamp"));
+            return ResponseEntity.ok(rfidUidCaptureService.submitFromDevice(
+                    (String) body.get("requestId"),
+                    (String) body.get("rfidUid"),
+                    DeviceContext.get()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PostMapping("/driver/gps")

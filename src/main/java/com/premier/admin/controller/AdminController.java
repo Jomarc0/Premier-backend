@@ -11,6 +11,7 @@ import com.premier.driver.repository.DriverRepository;
 import com.premier.driver.repository.VehicleRepository;
 import com.premier.driver.service.DriverOperationalStatusService;
 import com.premier.response.ApiResponse;
+import com.premier.rfid.RfidUidCaptureService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -34,6 +35,7 @@ public class AdminController {
     private final DriverRepository   driverRepository;
     private final VehicleRepository  vehicleRepository;
     private final DriverOperationalStatusService driverOperationalStatusService;
+    private final RfidUidCaptureService rfidUidCaptureService;
 
     //  EXCEPTION HANDLER 
     @ExceptionHandler(RuntimeException.class)
@@ -205,6 +207,20 @@ public class AdminController {
         return ResponseEntity.ok(
             adminService.createPassenger(
                 admin, rfidUid, category));
+    }
+
+    @PostMapping("/rfid/uid-capture/start")
+    public ResponseEntity<?> startRfidUidCapture(HttpServletRequest request) {
+        getCurrentAdmin(request);
+        return ResponseEntity.ok(rfidUidCaptureService.startCapture());
+    }
+
+    @GetMapping("/rfid/uid-capture/{requestId}")
+    public ResponseEntity<?> getRfidUidCaptureStatus(
+            HttpServletRequest request,
+            @PathVariable String requestId) {
+        getCurrentAdmin(request);
+        return ResponseEntity.ok(rfidUidCaptureService.status(requestId));
     }
 
     // DRIVERS
