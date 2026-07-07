@@ -104,10 +104,13 @@ public class SecurityConfig {
                     "/api/rfid/tap",
                     "/api/rfid/qr/process",
                     "/api/rfid/nfc/tap",
-                    "/api/rfid/driver/gps",
+                    "/api/rfid/driver/gps")
+                    .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
+
+                .requestMatchers(
                     "/api/rfid/registration/uid-request",
                     "/api/rfid/registration/uid-capture")
-                    .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
+                    .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL", "DEVICE_GPS_TRACKER")
 
                 .requestMatchers("/api/driver/location", "/api/driver/gps")
                     .hasAuthority("ROLE_DRIVER")

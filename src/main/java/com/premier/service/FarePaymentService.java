@@ -16,6 +16,7 @@ import com.premier.rfid.DeviceFareRequest;
 import com.premier.response.ApiResponse;
 import com.premier.response.FarePaymentResponse;
 import com.premier.response.FareQrTokenResponse;
+import com.premier.response.FareQrStatusResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -165,6 +166,39 @@ public class FarePaymentService {
         fareQrTokenRepository.save(token);
 
         return response;
+    }
+
+    @Transactional
+    public ApiResponse<FareQrStatusResponse> getQrTokenStatus(Passenger principal, String payload) {
+        String rawToken = normalizeQrPayload(payload);
+        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
+                .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
+
+        if (!token.getPassenger().getId().equals(principal.getId())) {
+            throw new RuntimeException("Invalid QR fare token.");
+        }
+
+        if (token.getStatus() == FareQrTokenStatus.ACTIVE && token.getExpiresAt().isBefore(nowUtc())) {
+            token.setStatus(FareQrTokenStatus.EXPIRED);
+            fareQrTokenRepository.save(token);
+        }
+
+        FarePaymentResponse payment = null;
+        if (token.getStatus() == FareQrTokenStatus.USED && token.getUsedReferenceNumber() != null) {
+            payment = transactionRepository
+                    .findByReferenceNumberAndPassengerId(token.getUsedReferenceNumber(), principal.getId())
+                    .map(tx -> toFarePaymentResponse(tx, "QR"))
+                    .orElse(null);
+        }
+
+        long remaining = Math.max(0, java.time.Duration.between(nowUtc(), token.getExpiresAt()).getSeconds());
+        return ApiResponse.success("QR fare token status fetched.",
+                FareQrStatusResponse.builder()
+                        .status(token.getStatus().name())
+                        .expiresAt(token.getExpiresAt())
+                        .expiresInSeconds(remaining)
+                        .payment(payment)
+                        .build());
     }
 
     @Transactional

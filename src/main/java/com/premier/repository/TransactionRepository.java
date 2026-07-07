@@ -15,4 +15,5 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long> 
     List<Transaction> findTop5ByPassengerIdOrderByCreatedAtDesc(Long passengerId);
     Page<Transaction> findByPassengerIdAndTypeOrderByCreatedAtDesc(Long passengerId, TransactionType type, Pageable pageable);
     Optional<Transaction> findByIdempotencyKey(String idempotencyKey);
+    Optional<Transaction> findByReferenceNumberAndPassengerId(String referenceNumber, Long passengerId);
 }
