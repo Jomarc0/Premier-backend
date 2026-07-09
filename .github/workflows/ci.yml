@@ -52,6 +52,9 @@ jobs:
           java-version: "17"
           cache: maven
 
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+
       - name: Build backend
         run: ./mvnw -B clean package -DskipTests
 
