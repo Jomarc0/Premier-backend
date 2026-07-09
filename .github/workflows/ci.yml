@@ -1,0 +1,217 @@
+name: Premier CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Spring Boot Backend
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: premier_test
+          POSTGRES_USER: premier
+          POSTGRES_PASSWORD: premier_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U premier -d premier_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_URL: jdbc:postgresql://localhost:5432/premier_test?sslmode=disable
+      DB_USERNAME: premier
+      DB_PASSWORD: premier_password
+      JPA_DDL_AUTO: none
+      SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSL: "false"
+      SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLMODE: disable
+      JWT_SECRET: ci-passenger-secret-at-least-32-bytes
+      JWT_ADMIN_SECRET: ci-admin-secret-at-least-32-bytes
+      PAYMONGO_SECRET_KEY: sk_test_ci_placeholder
+      PAYMONGO_PUBLIC_KEY: pk_test_ci_placeholder
+      PAYMONGO_WEBHOOK_SECRET: ci-webhook-placeholder
+      RFID_TERMINAL_TOKEN: ci-rfid-terminal-placeholder
+      DRIVER_DEVICE_TOKEN: ci-driver-device-placeholder
+      DIALOGFLOW_PROJECT_ID: ci-placeholder
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build backend
+        run: ./mvnw -B clean package -DskipTests
+
+      - name: Run backend tests
+        run: ./mvnw -B test
+
+  users-mobile:
+    name: React Native Expo Mobile
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('users-mobile/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: users-mobile
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: users-mobile/package-lock.json
+
+      - name: Install mobile dependencies
+        run: npm ci
+
+      - name: Check Expo project
+        run: npx expo doctor
+
+      - name: Export Android bundle
+        run: npm run build
+
+  users-web:
+    name: React Vite Users Web
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('users/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: users
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: users/package-lock.json
+
+      - name: Install users web dependencies
+        run: npm ci
+
+      - name: Lint users web
+        run: npm run lint
+
+      - name: Build users web
+        run: npm run build
+
+  admin:
+    name: React Vite Admin Web
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('admin/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: admin
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+
+      - name: Install admin dependencies
+        run: npm ci
+
+      - name: Lint admin if available
+        run: npm run lint --if-present
+
+      - name: Build admin
+        run: npm run build
+
+  staff:
+    name: React Vite Staff Web
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('staff/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: staff
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: staff/package-lock.json
+
+      - name: Install staff dependencies
+        run: npm ci
+
+      - name: Build staff web
+        run: npm run build
+
+  rfid:
+    name: RFID Hardware Terminal Web
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('rfid/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: rfid
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: rfid/package-lock.json
+
+      - name: Install RFID terminal dependencies
+        run: npm ci
+
+      - name: Lint RFID terminal
+        run: npm run lint
+
+      - name: Build RFID terminal
+        run: npm run build
+
+  driver:
+    name: Driver Hardware Monitoring Web
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('driver/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: driver
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: driver/package-lock.json
+
+      - name: Install driver dependencies
+        run: npm ci
+
+      - name: Lint driver web
+        run: npm run lint
+
+      - name: Build driver web
+        run: npm run build
