@@ -1,6 +1,8 @@
 package com.premier.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.premier.driver.model.DriverShift;
+import com.premier.driver.model.Vehicle;
 import jakarta.persistence.*;
 import lombok.*;
 import java.math.BigDecimal;
@@ -53,6 +55,23 @@ public class Transaction {
 
     @Column(name = "device_id", length = 80)
     private String deviceId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_method", length = 30)
+    private PaymentMethod paymentMethod;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "vehicle_id")
+    private Vehicle vehicle;
+
+    @JsonIgnore
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "driver_shift_id")
+    private DriverShift driverShift;
+
+    @Column(name = "route_snapshot", length = 160)
+    private String routeSnapshot;
 
     @Column(name = "request_nonce", length = 120)
     private String requestNonce;

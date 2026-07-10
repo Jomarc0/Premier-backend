@@ -32,6 +32,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                path.equals("/api/passenger/auth/register")    ||
                path.equals("/api/passenger/auth/verify-totp") ||
                path.equals("/api/passenger/auth/totp/setup")  || 
+               path.equals("/api/public/support-tickets") ||
                path.equals("/api/rfid/tap") ||
                path.equals("/api/rfid/nfc/tap") ||
                path.equals("/api/passenger/topup/webhook");

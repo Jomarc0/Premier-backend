@@ -32,6 +32,7 @@ public class AdminAuthFilter extends OncePerRequestFilter {
         String path = request.getServletPath();
         return path.equals("/api/admin/auth/login")
                 || path.startsWith("/api/passenger/")
+                || path.startsWith("/api/public/")
                 || path.startsWith("/api/rfid/");
     }
 

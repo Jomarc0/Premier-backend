@@ -86,6 +86,7 @@ public class SecurityConfig {
                     "/api/passenger/auth/totp/setup",
                     "/api/passenger/chat/message",
                     "/api/passenger/topup/webhook",
+                    "/api/public/support-tickets",
                     // Admin public
                     "/api/admin/auth/login",
                     // Driver public

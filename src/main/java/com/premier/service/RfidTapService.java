@@ -4,9 +4,11 @@ import com.premier.rfid.RfidTapRequest;
 import com.premier.rfid.RfidTapResponse;
 import com.premier.model.Passenger;
 import com.premier.model.PassengerStatus;
+import com.premier.model.PaymentMethod;
 import com.premier.model.Transaction;
 import com.premier.model.TransactionStatus;
 import com.premier.model.TransactionType;
+import com.premier.payment.service.FarePaymentAttemptService;
 import com.premier.repository.PassengerRepository;
 import com.premier.repository.TransactionRepository;
 import com.premier.response.ApiResponse;
@@ -34,6 +36,7 @@ public class RfidTapService {
     private final PassengerRepository   passengerRepository;
     private final TransactionRepository transactionRepository;
     private final FirebaseService firebaseService;
+    private final FarePaymentAttemptService farePaymentAttemptService;
 
 
     private final Map<String, LocalDateTime> cooldownMap = new ConcurrentHashMap<>();
@@ -52,18 +55,21 @@ public class RfidTapService {
 
         if (passenger == null) {
             log.warn("RFID tap: card not found [uid={}]", mask(rfidUid));
+            recordFailure(null, rfidUid, "Card not found. Please register your RFID card.");
             return ApiResponse.error("Card not found. Please register your RFID card.");
         }
 
         // Validate card status
         if (passenger.getStatus() == PassengerStatus.BLOCKED) {
             log.warn("RFID tap: card blocked [uid={}]", mask(rfidUid));
+            recordFailure(passenger.getId(), rfidUid, "Your card is blocked. Please contact support.");
             return ApiResponse.error("Your card is blocked. Please contact support.");
         }
 
         if (passenger.getStatus() != PassengerStatus.ACTIVE) {
             log.warn("RFID tap: card not active [uid={}, status={}]",
                     mask(rfidUid), passenger.getStatus());
+            recordFailure(passenger.getId(), rfidUid, "Your card is not active. Please contact support.");
             return ApiResponse.error("Your card is not active. Please contact support.");
         }
 
@@ -72,6 +78,7 @@ public class RfidTapService {
         if (lastTap != null &&
                 lastTap.plusSeconds(COOLDOWN_SECONDS).isAfter(LocalDateTime.now())) {
             log.info("RFID tap: cooldown active [uid={}]", mask(rfidUid));
+            recordFailure(passenger.getId(), rfidUid, "Tap too fast. Please wait a moment and try again.");
             return ApiResponse.error("Tap too fast. Please wait a moment and try again.");
         }
 
@@ -80,6 +87,7 @@ public class RfidTapService {
         if (balanceBefore.compareTo(FIXED_FARE) < 0) {
             log.info("RFID tap: insufficient balance [uid={}, balance={}]",
                     mask(rfidUid), balanceBefore);
+            recordFailure(passenger.getId(), rfidUid, "Insufficient balance.");
             return ApiResponse.error(
                     String.format("Insufficient balance. Current: ₱%.2f, Required: ₱%.2f",
                             balanceBefore, FIXED_FARE));
@@ -111,10 +119,12 @@ public class RfidTapService {
                 .balanceBefore(balanceBefore)
                 .balanceAfter(balanceAfter)
                 .referenceNumber(refNumber)
+                .paymentMethod(PaymentMethod.RFID)
                 .description("RFID Tap - Premier Transit Fixed Fare")
                 .build();
 
         transactionRepository.save(transaction);
+        farePaymentAttemptService.recordSuccess(transaction, PaymentMethod.RFID, rfidUid, null, null);
 
         if (passenger.getFcmToken() != null) {
             firebaseService.sendFareDeduction(
@@ -145,5 +155,18 @@ public class RfidTapService {
         String trimmed = value.trim();
         int visible = Math.min(4, trimmed.length());
         return "****" + trimmed.substring(trimmed.length() - visible);
+    }
+
+    private void recordFailure(Long passengerId, String rfidUid, String message) {
+        farePaymentAttemptService.recordFailure(
+                PaymentMethod.RFID,
+                passengerId,
+                rfidUid,
+                null,
+                null,
+                null,
+                FIXED_FARE,
+                farePaymentAttemptService.classifyFailure(message),
+                message);
     }
 }

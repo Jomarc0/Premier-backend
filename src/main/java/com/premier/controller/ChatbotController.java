@@ -2,10 +2,11 @@ package com.premier.controller;
 
 import com.premier.request.ChatRequest;
 import com.premier.response.ChatResponse;
-import com.premier.cardfreeze.model.CardFreezeRequestType;
 import com.premier.model.Passenger;
 import com.premier.service.DialogflowService;
 import com.premier.service.GeminiService;
+import com.premier.service.PremierBotKnowledgeService;
+import com.premier.support.model.SupportTicketIssueType;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import jakarta.servlet.http.HttpServletRequest;
@@ -30,6 +31,7 @@ public class ChatbotController {
 
     private final DialogflowService dialogflowService;
     private final GeminiService geminiService;
+    private final PremierBotKnowledgeService premierBotKnowledgeService;
 
     // In-memory per-user rate limiting: 20 msg/min
     private final Map<String, Bucket> buckets =
@@ -82,21 +84,18 @@ public class ChatbotController {
         log.info("Chat [{}]: {}", userId, sanitized);
 
         if (isGeneralHelpRequest(sanitized)) {
-            return ResponseEntity.ok(ChatResponse.builder()
-                    .success(true)
-                    .reply("""
-                            I can help with top-ups, fare deductions, RFID card concerns, payment issues, and balance questions.
+            ChatResponse local = premierBotKnowledgeService.answer(sanitized, passenger);
+            if (local != null) {
+                return ResponseEntity.ok(local);
+            }
+        }
 
-                            For urgent help, contact Premier support:
-                            Phone: (02) 8888-171
-                            Hours: Monday to Saturday, 7:00 AM to 8:00 PM
-
-                            You can also visit any Premier terminal for in-person assistance.
-                            """.trim())
-                    .intent("LOCAL_GENERAL_HELP")
-                    .quickReplies(List.of("Top-up issue", "Fare deduction", "Payment failed", "Lost RFID card", "Check balance"))
-                    .sensitive(false)
-                    .build());
+        ChatResponse localKnowledge = premierBotKnowledgeService.answer(sanitized, passenger);
+        if (localKnowledge != null) {
+            if (shouldUseGemini(sanitized, localKnowledge)) {
+                localKnowledge.setReply(geminiService.enhanceSupportReply(sanitized, localKnowledge.getReply()));
+            }
+            return ResponseEntity.ok(localKnowledge);
         }
 
         ChatResponse response = dialogflowService
@@ -106,10 +105,10 @@ public class ChatbotController {
         if (sensitiveIntent != null) {
             return ResponseEntity.ok(ChatResponse.builder()
                     .success(true)
-                    .reply("For your security, please complete the card request form first. This helps the administrator verify whether the card should be frozen or updated.")
+                    .reply("This request needs admin review. Please fill out the support ticket form using your card number, email address, and reason. The admin will check your request and send confirmation to your email.")
                     .intent(sensitiveIntent.intentName())
                     .sensitive(true)
-                    .recommendedAction("OPEN_CARD_REQUEST_FORM")
+                    .recommendedAction("OPEN_SUPPORT_TICKET_FORM")
                     .build());
         }
 
@@ -142,21 +141,21 @@ public class ChatbotController {
     private SensitiveIntent detectSensitiveIntent(String message, String dialogflowIntent) {
         String text = (message + " " + (dialogflowIntent == null ? "" : dialogflowIntent)).toLowerCase();
         if (text.contains("stolen")) {
-            return new SensitiveIntent("STOLEN_CARD", CardFreezeRequestType.STOLEN);
+            return new SensitiveIntent("STOLEN_CARD", SupportTicketIssueType.LOST_CARD);
         }
         if (text.contains("lost") || text.contains("missing")) {
-            return new SensitiveIntent("LOST_CARD", CardFreezeRequestType.LOST);
+            return new SensitiveIntent("LOST_CARD", SupportTicketIssueType.LOST_CARD);
         }
         if (text.contains("freeze") || text.contains("block my card") || text.contains("deactivate my card")) {
-            return new SensitiveIntent("FREEZE_CARD_REQUEST", CardFreezeRequestType.FREEZE_REQUEST);
+            return new SensitiveIntent("FREEZE_CARD_REQUEST", SupportTicketIssueType.FREEZE_CARD);
         }
         if (text.contains("change card") || text.contains("card change") || text.contains("update card")) {
-            return new SensitiveIntent("CARD_UPDATE_REQUEST", CardFreezeRequestType.CARD_UPDATE);
+            return new SensitiveIntent("CARD_UPDATE_REQUEST", SupportTicketIssueType.DAMAGED_CARD);
         }
         return null;
     }
 
-    private record SensitiveIntent(String intentName, CardFreezeRequestType type) {}
+    private record SensitiveIntent(String intentName, SupportTicketIssueType issueType) {}
 
     private boolean isGeneralHelpRequest(String message) {
         String text = message == null ? "" : message.toLowerCase();

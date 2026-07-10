@@ -355,6 +355,7 @@ public class AdminService {
         tx.setAmount(amount);
         tx.setBalanceBefore(oldBalance);
         tx.setBalanceAfter(newBalance);
+        tx.setPaymentMethod(PaymentMethod.ADMIN);
         tx.setDescription("Admin balance adjustment: " +
             reason.trim());
         logActivity(admin, "ADD_BALANCE_DETAIL",

@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 
 import com.premier.model.TransactionStatus;
 import com.premier.model.TransactionType;
+import com.premier.model.PaymentMethod;
 
 @Data
 @AllArgsConstructor
@@ -19,6 +20,12 @@ public class TransactionResponse {
     private BigDecimal balanceBefore;
     private BigDecimal balanceAfter;
     private String referenceNumber;
+    private PaymentMethod paymentMethod;
+    private Long vehicleId;
+    private String plateNumber;
+    private Long driverShiftId;
+    private String routeSnapshot;
+    private String deviceId;
     private String description;
     private LocalDateTime createdAt;
 }

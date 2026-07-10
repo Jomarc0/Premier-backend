@@ -282,6 +282,7 @@ public class PayMongoService {
         tx.setBalanceBefore(balanceBefore);
         tx.setBalanceAfter(balanceAfter);
         tx.setReferenceNumber(topUpRequest.getReferenceNumber());
+        tx.setPaymentMethod(PaymentMethod.PAYMONGO);
         tx.setDescription("Top-up via PayMongo");
         transactionRepository.save(tx);
 

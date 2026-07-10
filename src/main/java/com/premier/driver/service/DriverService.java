@@ -6,6 +6,8 @@ import com.premier.driver.security.DriverJwtUtil;
 import com.premier.model.Passenger;
 import com.premier.model.PassengerCardCategory;
 import com.premier.model.PassengerStatus;
+import com.premier.model.PaymentMethod;
+import com.premier.payment.service.FarePaymentAttemptService;
 import com.premier.repository.PassengerRepository;
 import com.premier.repository.TransactionRepository;
 import com.premier.response.ApiResponse;
@@ -48,6 +50,7 @@ public class DriverService {
     private final DriverJwtUtil                driverJwtUtil;
     private final DriverLocationRepository driverLocationRepository;
     private final DriverOperationalStatusService driverOperationalStatusService;
+    private final FarePaymentAttemptService farePaymentAttemptService;
 
     //LOGIN
 
@@ -176,24 +179,37 @@ public class DriverService {
             BigDecimal requestedFare,
             int passengerCount) {
         DriverShift shift = shiftRepository.findById(shiftId)
-                .orElseThrow(() -> new RuntimeException(
-                        "Shift not found."));
+                .orElse(null);
+        if (shift == null) {
+            recordTapInFailure(null, rfidUid, null, "Shift not found.");
+            throw new RuntimeException("Shift not found.");
+        }
 
-        if (shift.getStatus() != ShiftStatus.ACTIVE)
+        if (shift.getStatus() != ShiftStatus.ACTIVE) {
+            recordTapInFailure(null, rfidUid, shift, "Shift is not active.");
             throw new RuntimeException("Shift is not active.");
+        }
 
         Passenger passenger = passengerRepository
                 .findLockedByRfidUid(rfidUid.trim().toUpperCase())
-                .orElseThrow(() -> new RuntimeException(
-                        "Passenger not found. Please check RFID card."));
+                .orElse(null);
+        if (passenger == null) {
+            recordTapInFailure(null, rfidUid, shift, "Passenger not found. Please check RFID card.");
+            throw new RuntimeException("Passenger not found. Please check RFID card.");
+        }
 
-        if (passenger.getStatus() != PassengerStatus.ACTIVE)
+        if (passenger.getStatus() != PassengerStatus.ACTIVE) {
+            recordTapInFailure(passenger.getId(), rfidUid, shift,
+                "Account is " + passenger.getStatus().name().toLowerCase() + ".");
             throw new RuntimeException(
                 "Account is " +
                 passenger.getStatus().name().toLowerCase() + ".");
+        }
 
         BigDecimal fare = fareFor(passenger);
 
+        if (passenger.getBalance().compareTo(fare) < 0)
+            recordTapInFailure(passenger.getId(), rfidUid, shift, "Insufficient balance.");
         if (passenger.getBalance().compareTo(fare) < 0)
             throw new RuntimeException(
                 "Insufficient balance. Current: ₱"
@@ -202,6 +218,8 @@ public class DriverService {
         long onboardCount = onboardRepository
                 .countByShiftIdAndStatus(shiftId, OnboardStatus.ONBOARD);
 
+        if (onboardCount >= shift.getVehicle().getTotalCapacity())
+            recordTapInFailure(passenger.getId(), rfidUid, shift, "Vehicle is at full capacity!");
         if (onboardCount >= shift.getVehicle().getTotalCapacity())
             throw new RuntimeException("Vehicle is at full capacity!");
 
@@ -219,11 +237,19 @@ public class DriverService {
         tx.setAmount(fare);
         tx.setBalanceBefore(balanceBefore);
         tx.setBalanceAfter(balanceAfter);
+        tx.setPaymentMethod(PaymentMethod.RFID);
+        tx.setVehicle(shift.getVehicle());
+        tx.setDriverShift(shift);
+        tx.setRouteSnapshot(shift.getVehicle() != null
+            ? shift.getVehicle().getRoute()
+            : null);
         tx.setDescription("Fare deduction - " + dropOffLocation);
         tx.setReferenceNumber("FARE-" +
             UUID.randomUUID().toString()
                 .substring(0, 8).toUpperCase());
         transactionRepository.save(tx);
+        farePaymentAttemptService.recordSuccess(tx, PaymentMethod.RFID, rfidUid,
+            shift.getVehicle() != null ? shift.getVehicle().getPlateNumber() : null, null);
 
         // Record boarding
         PassengerOnboard onboard = PassengerOnboard.builder()
@@ -259,6 +285,19 @@ public class DriverService {
             return FIXED_FARE.multiply(new BigDecimal("0.80"));
         }
         return FIXED_FARE;
+    }
+
+    private void recordTapInFailure(Long passengerId, String rfidUid, DriverShift shift, String message) {
+        farePaymentAttemptService.recordFailure(
+                PaymentMethod.RFID,
+                passengerId,
+                rfidUid,
+                shift != null && shift.getVehicle() != null ? shift.getVehicle().getPlateNumber() : null,
+                null,
+                null,
+                FIXED_FARE,
+                farePaymentAttemptService.classifyFailure(message),
+                message);
     }
 
     //  DROP-OFF 

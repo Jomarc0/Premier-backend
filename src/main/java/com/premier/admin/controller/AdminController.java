@@ -38,6 +38,13 @@ public class AdminController {
     private final RfidUidCaptureService rfidUidCaptureService;
 
     //  EXCEPTION HANDLER 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<?> handleBadRequest(IllegalArgumentException ex) {
+        return ResponseEntity.badRequest()
+            .body(ApiResponse.error(
+                ex.getMessage() != null ? ex.getMessage() : "Invalid request"));
+    }
+
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<?> handleError(RuntimeException ex) {
         String msg = ex.getMessage();
@@ -122,6 +129,22 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success(
             "Analytics fetched.",
             adminAnalyticsService.getAnalytics(range, from, to, route, bus)));
+    }
+
+    @GetMapping("/analytics/dashboard")
+    public ResponseEntity<?> analyticsDashboard(
+            HttpServletRequest request,
+            @RequestParam(defaultValue = "last7") String range,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate,
+            @RequestParam(required = false) String busId,
+            @RequestParam(required = false) String routeId,
+            @RequestParam(required = false) String paymentMethod,
+            @RequestParam(defaultValue = "Asia/Manila") String timezone) {
+        getCurrentAdmin(request);
+        return ResponseEntity.ok(ApiResponse.success(
+            "Analytics dashboard fetched.",
+            adminAnalyticsService.getDashboard(range, startDate, endDate, busId, routeId, paymentMethod, timezone)));
     }
 
     //TRANSACTIONS 

@@ -1,0 +1,17 @@
+package com.premier.payment.model;
+
+public enum FarePaymentFailureReason {
+    NONE,
+    INVALID_CARD,
+    INACTIVE_ACCOUNT,
+    BLOCKED_CARD,
+    INSUFFICIENT_BALANCE,
+    DUPLICATE_REQUEST,
+    EXPIRED_TOKEN,
+    USED_TOKEN,
+    INVALID_TOKEN,
+    DEVICE_VALIDATION_FAILED,
+    INVALID_REQUEST,
+    VEHICLE_FULL,
+    UNKNOWN
+}

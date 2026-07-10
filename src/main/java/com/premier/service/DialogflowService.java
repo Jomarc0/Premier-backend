@@ -65,7 +65,7 @@ public class DialogflowService {
 
     public ChatResponse detectIntent(String userMessage, String sessionId) {
         if (sessionsClient == null) {
-            return fallbackResponse("Our AI support is temporarily unavailable. Please call (123) 456-7890.");
+            return fallbackResponse("Our AI support is temporarily unavailable. Please call Premier support at (02) 8888-171.");
         }
 
         // Use provided sessionId or generate a new one
@@ -118,7 +118,7 @@ public class DialogflowService {
 
             // Fallback if empty response
             if (replyText == null || replyText.isBlank()) {
-                replyText = "I'm not sure how to help with that. Please contact support at (123) 456-7890.";
+                replyText = "I'm not sure how to help with that. Please contact Premier support at (02) 8888-171.";
             }
 
             return ChatResponse.builder()
@@ -131,7 +131,7 @@ public class DialogflowService {
         } catch (Exception e) {
             log.error("Dialogflow detectIntent failed: {}", e.getMessage(), e);
             return fallbackResponse(
-                    "Our support bot encountered an issue. Please try again or contact support at (123) 456-7890."
+                    "Our support bot encountered an issue. Please try again or contact Premier support at (02) 8888-171."
             );
         }
     }

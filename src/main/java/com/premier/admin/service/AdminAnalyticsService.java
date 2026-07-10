@@ -1,20 +1,50 @@
 package com.premier.admin.service;
 
-import com.premier.driver.model.*;
-import com.premier.driver.repository.*;
-import com.premier.model.*;
-import com.premier.repository.*;
+import com.premier.device.model.Device;
+import com.premier.device.model.DeviceStatus;
+import com.premier.device.repository.DeviceRepository;
+import com.premier.driver.model.DriverLocation;
+import com.premier.driver.model.DriverShift;
+import com.premier.driver.model.PassengerOnboard;
+import com.premier.driver.model.ShiftStatus;
+import com.premier.driver.model.Vehicle;
+import com.premier.driver.model.VehicleStatus;
+import com.premier.driver.repository.DriverLocationRepository;
+import com.premier.driver.repository.DriverShiftRepository;
+import com.premier.driver.repository.PassengerOnboardRepository;
+import com.premier.driver.repository.VehicleRepository;
+import com.premier.model.TopUpRequest;
+import com.premier.model.Transaction;
+import com.premier.model.TransactionStatus;
+import com.premier.model.TransactionType;
+import com.premier.payment.model.FarePaymentAttempt;
+import com.premier.payment.model.FarePaymentAttemptStatus;
+import com.premier.payment.repository.FarePaymentAttemptRepository;
+import com.premier.repository.TopUpRequestRepository;
+import com.premier.repository.TransactionRepository;
+import com.premier.support.model.SupportTicket;
+import com.premier.support.model.SupportTicketStatus;
+import com.premier.support.repository.SupportTicketRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
-import java.time.temporal.WeekFields;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -22,681 +52,542 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AdminAnalyticsService {
 
-    private final PassengerRepository passengerRepository;
+    private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Manila");
+    private static final int ACTIVE_BUS_MINUTES = 15;
+    private static final int OFFLINE_DEVICE_MINUTES = 5;
+    private static final DateTimeFormatter DAY_KEY = DateTimeFormatter.ISO_LOCAL_DATE;
+    private static final DateTimeFormatter DAY_LABEL = DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH);
+
     private final TransactionRepository transactionRepository;
     private final TopUpRequestRepository topUpRequestRepository;
     private final VehicleRepository vehicleRepository;
-    private final DriverRepository driverRepository;
     private final DriverShiftRepository driverShiftRepository;
     private final PassengerOnboardRepository passengerOnboardRepository;
     private final DriverLocationRepository driverLocationRepository;
-
-    private static final DateTimeFormatter DAY_LABEL = DateTimeFormatter.ofPattern("MMM d");
-    private static final DateTimeFormatter MONTH_LABEL = DateTimeFormatter.ofPattern("MMM yyyy");
+    private final DeviceRepository deviceRepository;
+    private final SupportTicketRepository supportTicketRepository;
+    private final FarePaymentAttemptRepository farePaymentAttemptRepository;
 
     @Transactional(readOnly = true)
     public Map<String, Object> getAnalytics(String range, LocalDate from, LocalDate to,
                                             String route, String bus) {
-        DateWindow window = resolveWindow(range, from, to);
-        List<Passenger> passengers = passengerRepository.findAll();
-        List<Transaction> transactions = transactionRepository.findAll();
-        List<TopUpRequest> topUps = topUpRequestRepository.findAll();
+        return getDashboard(range, from, to, bus, route, null, DEFAULT_ZONE.getId());
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> getDashboard(String range, LocalDate startDate, LocalDate endDate,
+                                            String busId, String routeId, String paymentMethod,
+                                            String timezone) {
+        ZoneId zone = resolveZone(timezone);
+        DateWindow window = resolveWindow(range, startDate, endDate, zone);
+        String normalizedBus = blankToNull(busId);
+        String normalizedRoute = blankToNull(routeId);
+        String normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
         List<Vehicle> vehicles = vehicleRepository.findAll();
-        List<Driver> drivers = driverRepository.findAll();
-        List<DriverShift> shifts = driverShiftRepository.findAll();
-        List<PassengerOnboard> onboards = passengerOnboardRepository.findAll();
-        List<DriverLocation> locations = driverLocationRepository.findAll();
-        Map<String, DriverLocation> latestLocationByPlate = latestLocationByPlate(locations);
 
-        List<Transaction> txInRange = transactions.stream()
+        List<Transaction> fareAttempts = transactionRepository.findAll().stream()
+                .filter(this::fareTransaction)
                 .filter(tx -> inWindow(tx.getCreatedAt(), window))
+                .filter(tx -> paymentMethodMatches(tx, normalizedPaymentMethod))
+                .filter(tx -> transactionVehicleMatches(tx, normalizedBus, normalizedRoute, vehicles))
                 .toList();
-        List<TopUpRequest> topUpsInRange = topUps.stream()
-                .filter(t -> inWindow(t.getCreatedAt(), window))
+        List<Transaction> successfulFare = fareAttempts.stream().filter(this::successful).toList();
+        List<FarePaymentAttempt> paymentAttempts = farePaymentAttemptRepository.findByCreatedAtBetween(window.start(), window.end()).stream()
+                .filter(attempt -> paymentAttemptMethodMatches(attempt, normalizedPaymentMethod))
+                .filter(attempt -> paymentAttemptVehicleMatches(attempt, normalizedBus, normalizedRoute))
                 .toList();
-        List<DriverShift> shiftsInRange = shifts.stream()
-                .filter(s -> inWindow(s.getShiftStart(), window))
-                .filter(s -> routeMatches(s.getVehicle(), route))
-                .filter(s -> busMatches(s.getVehicle(), bus))
-                .toList();
-        List<PassengerOnboard> onboardsInRange = onboards.stream()
+
+        List<PassengerOnboard> onboardRecords = passengerOnboardRepository.findAll().stream()
                 .filter(o -> inWindow(o.getBoardedAt(), window))
-                .filter(o -> routeMatches(o.getShift().getVehicle(), route))
-                .filter(o -> busMatches(o.getShift().getVehicle(), bus))
+                .filter(o -> vehicleMatches(o.getShift() == null ? null : o.getShift().getVehicle(), normalizedBus, normalizedRoute))
                 .toList();
-        List<DriverLocation> locationsInRange = locations.stream()
-                .filter(l -> inWindow(l.getRecordedAt(), window))
-                .filter(l -> bus == null || bus.isBlank() || l.getPlateNumber().equalsIgnoreCase(bus))
+        List<DriverShift> shifts = driverShiftRepository.findAll().stream()
+                .filter(s -> inWindow(s.getShiftStart(), window))
+                .filter(s -> vehicleMatches(s.getVehicle(), normalizedBus, normalizedRoute))
                 .toList();
+        List<DriverLocation> locations = driverLocationRepository.findAll();
+        List<Device> devices = deviceRepository.findAll();
+        List<TopUpRequest> topUps = topUpRequestRepository.findAll();
+        List<SupportTicket> tickets = supportTicketRepository.findAll();
 
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("filters", filters(window, range, route, bus));
-        data.put("executive", executive(passengers, txInRange, transactions, vehicles, shiftsInRange,
-                onboardsInRange, latestLocationByPlate));
-        data.put("passengerAnalytics", passengerAnalytics(passengers, txInRange, onboardsInRange, window));
-        data.put("rfidAnalytics", rfidAnalytics(passengers, txInRange));
-        data.put("revenueAnalytics", revenueAnalytics(txInRange, onboardsInRange, window));
-        data.put("topUpAnalytics", topUpAnalytics(topUpsInRange, txInRange, window));
-        data.put("busAnalytics", busAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange,
-                latestLocationByPlate));
-        data.put("gpsAnalytics", gpsAnalytics(locationsInRange, vehicles));
-        data.put("queueTerminalAnalytics", queueTerminalAnalytics(vehicles, onboardsInRange));
-        data.put("routeAnalytics", routeAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange));
-        data.put("driverConductorAnalytics", driverAnalytics(drivers, shiftsInRange, onboardsInRange, txInRange));
-        data.put("operationalAnalytics", operationalAnalytics(vehicles, shiftsInRange, onboardsInRange, txInRange));
-        data.put("predictiveAnalytics", predictiveAnalytics(transactions, onboards, vehicles));
-        data.put("dataSources", dataSources());
-        return data;
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("filters", filters(window, range, normalizedBus, normalizedRoute, normalizedPaymentMethod, zone));
+        response.put("options", options(vehicles));
+        response.put("summary", summary(successfulFare, fareAttempts, paymentAttempts, shifts, vehicles, locations, devices, topUps, tickets, window));
+        response.put("charts", charts(successfulFare, fareAttempts, onboardRecords, shifts, vehicles, zone, window));
+        response.put("recent", recent(successfulFare, tickets, devices, locations, zone));
+        response.put("forecast", forecast(successfulFare));
+        response.put("definitions", definitions());
+        response.put("unsupported", List.of(
+                "Average waiting time is not available because queue entry and service timestamps are not stored.",
+                "On-time arrival metrics are not available because scheduled and actual arrival timestamps are not stored.",
+                "Driver performance and route efficiency scores were removed because the stored data does not define those scores."
+        ));
+        response.put("generatedAt", OffsetDateTime.now(zone).toString());
+        return response;
     }
 
-    private Map<String, Object> executive(List<Passenger> passengers, List<Transaction> txInRange,
-                                          List<Transaction> allTransactions, List<Vehicle> vehicles,
-                                          List<DriverShift> shiftsInRange,
-                                          List<PassengerOnboard> onboardsInRange,
-                                          Map<String, DriverLocation> latestLocationByPlate) {
-        LocalDate today = LocalDate.now();
-        LocalDate weekStart = today.with(WeekFields.ISO.dayOfWeek(), 1);
-        LocalDate monthStart = today.withDayOfMonth(1);
-
-        BigDecimal revenueToday = fareRevenue(allTransactions.stream()
-                .filter(t -> sameDay(t.getCreatedAt(), today)).toList());
-        BigDecimal revenueWeek = fareRevenue(allTransactions.stream()
-                .filter(t -> dateBetween(t.getCreatedAt(), weekStart, today)).toList());
-        BigDecimal revenueMonth = fareRevenue(allTransactions.stream()
-                .filter(t -> dateBetween(t.getCreatedAt(), monthStart, today)).toList());
+    private Map<String, Object> summary(List<Transaction> successfulFare, List<Transaction> fareAttempts,
+                                        List<FarePaymentAttempt> paymentAttempts,
+                                        List<DriverShift> shifts, List<Vehicle> vehicles,
+                                        List<DriverLocation> locations, List<Device> devices,
+                                        List<TopUpRequest> topUps, List<SupportTicket> tickets,
+                                        DateWindow window) {
+        long successfulCount = successfulFare.size();
+        long attemptCount = paymentAttempts.isEmpty() ? fareAttempts.size() : paymentAttempts.size();
+        long successfulAttempts = paymentAttempts.isEmpty()
+                ? successfulCount
+                : paymentAttempts.stream().filter(a -> a.getStatus() == FarePaymentAttemptStatus.SUCCESS).count();
+        long activePassengers = successfulFare.stream()
+                .map(Transaction::getPassenger)
+                .filter(Objects::nonNull)
+                .map(p -> p.getId())
+                .filter(Objects::nonNull)
+                .distinct()
+                .count();
+        long activeBuses = activeBusCount(vehicles, shifts, locations);
+        long pendingTopUps = topUps.stream()
+                .filter(t -> t.getStatus() == TransactionStatus.PENDING || t.getStatus() == TransactionStatus.PROCESSING)
+                .filter(t -> inWindow(t.getCreatedAt(), window))
+                .count();
+        long openTickets = tickets.stream().filter(this::openTicket).count();
+        long offlineDevices = devices.stream().filter(this::offlineDevice).count();
 
         return mapOf(
-                "totalRegisteredPassengers", passengers.size(),
-                "activePassengersToday", distinctFarePassengers(allTransactions.stream()
-                        .filter(t -> sameDay(t.getCreatedAt(), today)).toList()),
-                "totalRevenueToday", revenueToday,
-                "revenueThisWeek", revenueWeek,
-                "revenueThisMonth", revenueMonth,
-                "activeBuses", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE).count(),
-                "busesOnRoute", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE
-                        && !atTerminal(v, latestLocationByPlate)).count(),
-                "busesAtTerminal", vehicles.stream().filter(v -> atTerminal(v, latestLocationByPlate)).count(),
-                "totalTripsToday", shiftsInRange.stream().filter(s -> sameDay(s.getShiftStart(), today)).count(),
-                "averageWaitingTimeMinutes", null,
-                "averageArrivalTimeMinutes", avgTripMinutes(onboardsInRange)
+                "fareRevenue", sumAmounts(successfulFare),
+                "successfulTransactions", successfulCount,
+                "activePassengers", activePassengers,
+                "activeBuses", activeBuses,
+                "paymentSuccessRate", attemptCount == 0 ? 0 : percent(successfulAttempts, attemptCount),
+                "pendingTopUps", pendingTopUps,
+                "openTickets", openTickets,
+                "offlineDevices", offlineDevices
         );
     }
 
-    private Map<String, Object> passengerAnalytics(List<Passenger> passengers, List<Transaction> txInRange,
-                                                   List<PassengerOnboard> onboardsInRange, DateWindow window) {
-        Map<Long, Long> tripCounts = fareTransactions(txInRange).stream()
-                .collect(Collectors.groupingBy(t -> t.getPassenger().getId(), Collectors.counting()));
-
-        List<Map<String, Object>> frequent = tripCounts.entrySet().stream()
-                .sorted(Map.Entry.<Long, Long>comparingByValue().reversed())
-                .limit(10)
-                .map(e -> mapOf("passengerId", e.getKey(), "trips", e.getValue()))
-                .toList();
-
+    private Map<String, Object> charts(List<Transaction> successfulFare, List<Transaction> fareAttempts,
+                                       List<PassengerOnboard> onboardRecords, List<DriverShift> shifts,
+                                       List<Vehicle> vehicles, ZoneId zone, DateWindow window) {
         return mapOf(
-                "summary", mapOf(
-                        "totalRegisteredPassengers", passengers.size(),
-                        "activePassengers", passengers.stream().filter(p -> p.getStatus() == PassengerStatus.ACTIVE).count(),
-                        "inactivePassengers", passengers.stream().filter(p -> p.getStatus() != PassengerStatus.ACTIVE).count(),
-                        "newRegistrations", passengers.stream().filter(p -> inWindow(p.getCreatedAt(), window)).count(),
-                        "averageTripsPerPassenger", passengers.isEmpty() ? 0 : round((double) fareTransactions(txInRange).size() / passengers.size())
-                ),
-                "dailyPassengerCount", countByDay(passengers.stream().map(Passenger::getCreatedAt).toList()),
-                "passengerGrowthTrend", cumulativePassengers(passengers),
-                "passengerActivityTrend", countTransactionsByBucket(fareTransactions(txInRange), window),
-                "frequentTravelers", frequent,
-                "mostActivePassengers", frequent,
-                "peakTravelHours", peakHours(fareTransactions(txInRange)),
-                "routeUsageDistribution", countOnboardsByRoute(onboardsInRange)
+                "revenueTrend", revenueTrend(successfulFare, window),
+                "transactionsByPaymentMethod", transactionsByPaymentMethod(successfulFare),
+                "passengerActivityTrend", passengerActivityTrend(successfulFare),
+                "peakTravelHours", peakTravelHours(successfulFare, zone),
+                "tripsAndPassengersByBus", tripsAndPassengersByBus(successfulFare, shifts),
+                "queueLengthByTerminal", queueLengthByTerminal(vehicles)
         );
     }
 
-    private Map<String, Object> rfidAnalytics(List<Passenger> passengers, List<Transaction> txInRange) {
-        List<Transaction> fareTx = fareTransactions(txInRange);
-        long successful = fareTx.stream().filter(this::successful).count();
-        long failed = fareTx.stream().filter(t -> !successful(t)).count();
+    private Map<String, Object> recent(List<Transaction> successfulFare, List<SupportTicket> tickets,
+                                       List<Device> devices, List<DriverLocation> locations, ZoneId zone) {
         return mapOf(
-                "summary", mapOf(
-                        "totalRfidCardsIssued", passengers.stream().filter(p -> p.getRfidUid() != null && !p.getRfidUid().isBlank()).count(),
-                        "activeRfidCards", passengers.stream().filter(p -> p.getRfidUid() != null && p.getStatus() == PassengerStatus.ACTIVE).count(),
-                        "blockedRfidCards", passengers.stream().filter(p -> p.getRfidUid() != null && p.getStatus() == PassengerStatus.BLOCKED).count(),
-                        "lostRfidCards", null,
-                        "lowBalanceAccounts", passengers.stream().filter(p -> p.getBalance().compareTo(new BigDecimal("100.00")) < 0).count(),
-                        "successfulRfidTransactions", successful,
-                        "failedRfidTransactions", failed,
-                        "invalidTapAttempts", null,
-                        "totalRfidTaps", fareTx.size()
-                ),
-                "rfidUsageTrend", countTransactionsByBucket(fareTx, null),
-                "rfidSuccessRate", fareTx.isEmpty() ? 0 : round((successful * 100.0) / fareTx.size()),
-                "rfidActivityDistribution", peakHours(fareTx)
+                "fareTransactions", successfulFare.stream()
+                        .sorted(Comparator.comparing(Transaction::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                        .limit(10)
+                        .map(tx -> recentFareTransaction(tx, zone))
+                        .toList(),
+                "supportTickets", tickets.stream()
+                        .sorted(Comparator.comparing(SupportTicket::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                        .limit(10)
+                        .map(ticket -> mapOf(
+                                "ticketNumber", ticket.getTicketNumber(),
+                                "category", label(ticket.getIssueType() == null ? null : ticket.getIssueType().name()),
+                                "status", label(ticket.getStatus() == null ? null : ticket.getStatus().name()),
+                                "dateSubmitted", formatDateTime(ticket.getCreatedAt(), zone)
+                        ))
+                        .toList(),
+                "systemAlerts", systemAlerts(devices, locations, zone)
         );
     }
 
-    private Map<String, Object> revenueAnalytics(List<Transaction> txInRange, List<PassengerOnboard> onboardsInRange,
-                                                 DateWindow window) {
-        List<Transaction> fareTx = fareTransactions(txInRange).stream().filter(this::successful).toList();
-        Map<String, BigDecimal> revenuePerRoute = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> safeRoute(o.getShift().getVehicle()),
-                        Collectors.reducing(BigDecimal.ZERO, PassengerOnboard::getFare, BigDecimal::add)));
-        Map<String, BigDecimal> revenuePerBus = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> o.getShift().getVehicle().getPlateNumber(),
-                        Collectors.reducing(BigDecimal.ZERO, PassengerOnboard::getFare, BigDecimal::add)));
-
+    private Map<String, Object> forecast(List<Transaction> successfulFare) {
+        long operatingDays = successfulFare.stream()
+                .map(Transaction::getCreatedAt)
+                .filter(Objects::nonNull)
+                .map(LocalDateTime::toLocalDate)
+                .distinct()
+                .count();
+        boolean available = operatingDays >= 30;
         return mapOf(
-                "summary", mapOf(
-                        "revenueToday", sumAmount(fareTx.stream().filter(t -> sameDay(t.getCreatedAt(), LocalDate.now())).toList()),
-                        "revenueThisWeek", sumAmount(fareTx.stream().filter(t -> dateBetween(t.getCreatedAt(),
-                                LocalDate.now().with(WeekFields.ISO.dayOfWeek(), 1), LocalDate.now())).toList()),
-                        "revenueThisMonth", sumAmount(fareTx.stream().filter(t -> dateBetween(t.getCreatedAt(),
-                                LocalDate.now().withDayOfMonth(1), LocalDate.now())).toList()),
-                        "revenueThisYear", sumAmount(fareTx.stream().filter(t -> t.getCreatedAt() != null
-                                && t.getCreatedAt().getYear() == LocalDate.now().getYear()).toList()),
-                        "averageFareCollected", averageAmount(fareTx),
-                        "highestRevenueRoute", topBigDecimal(revenuePerRoute),
-                        "highestRevenueBus", topBigDecimal(revenuePerBus)
-                ),
-                "revenueTrend", sumTransactionsByBucket(fareTx, window),
-                "revenuePerRoute", toChart(revenuePerRoute, "route", "revenue"),
-                "revenuePerBus", toChart(revenuePerBus, "plateNumber", "revenue"),
-                "monthlyRevenueComparison", sumTransactionsByMonth(fareTx)
+                "available", available,
+                "requiredOperatingDays", 30,
+                "currentOperatingDays", operatingDays,
+                "message", available
+                        ? "Forecasting has enough operating-day history for a future model."
+                        : "Forecasting will become available after at least 30 days of valid fare and trip data have been recorded."
         );
     }
 
-    private Map<String, Object> topUpAnalytics(List<TopUpRequest> topUpsInRange, List<Transaction> txInRange,
-                                               DateWindow window) {
-        List<Transaction> topupTx = txInRange.stream().filter(t -> t.getType() == TransactionType.TOPUP).toList();
-        long successful = topUpsInRange.stream().filter(t -> t.getStatus() == TransactionStatus.SUCCESS
-                || t.getStatus() == TransactionStatus.COMPLETED).count();
-        long failed = topUpsInRange.stream().filter(t -> t.getStatus() == TransactionStatus.FAILED
-                || t.getStatus() == TransactionStatus.CANCELLED || t.getStatus() == TransactionStatus.EXPIRED).count();
-        BigDecimal total = topUpsInRange.stream()
-                .filter(t -> t.getStatus() == TransactionStatus.SUCCESS || t.getStatus() == TransactionStatus.COMPLETED)
-                .map(TopUpRequest::getAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        return mapOf(
-                "summary", mapOf(
-                        "totalTopUps", topUpsInRange.size(),
-                        "successfulTopUps", successful,
-                        "failedPayments", failed,
-                        "averageTopUpAmount", successful == 0 ? BigDecimal.ZERO : total.divide(BigDecimal.valueOf(successful), 2, RoundingMode.HALF_UP),
-                        "totalTopUpRevenue", total,
-                        "gcashTransactions", null,
-                        "mayaTransactions", null,
-                        "mostUsedPaymentMethod", null
-                ),
-                "topUpTrend", sumTransactionsByBucket(topupTx, window),
-                "paymentMethodDistribution", List.of(),
-                "monthlyTopUpVolume", countTopUpsByMonth(topUpsInRange)
-        );
-    }
-
-    private Map<String, Object> busAnalytics(List<Vehicle> vehicles, List<DriverShift> shiftsInRange,
-                                             List<PassengerOnboard> onboardsInRange, List<Transaction> txInRange,
-                                             Map<String, DriverLocation> latestLocationByPlate) {
-        Map<String, Long> tripsPerBus = shiftsInRange.stream()
-                .collect(Collectors.groupingBy(s -> s.getVehicle().getPlateNumber(), Collectors.counting()));
-        Map<String, Integer> passengersPerBus = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> o.getShift().getVehicle().getPlateNumber(),
-                        Collectors.summingInt(PassengerOnboard::getPassengerCount)));
-        Map<String, BigDecimal> revenuePerBus = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> o.getShift().getVehicle().getPlateNumber(),
-                        Collectors.reducing(BigDecimal.ZERO, PassengerOnboard::getFare, BigDecimal::add)));
-        return mapOf(
-                        "summary", mapOf(
-                        "totalBuses", vehicles.size(),
-                        "activeBuses", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE).count(),
-                        "busesOnRoute", vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE
-                                && !atTerminal(v, latestLocationByPlate)).count(),
-                        "busesAtTerminal", vehicles.stream().filter(v -> atTerminal(v, latestLocationByPlate)).count(),
-                        "mostUtilizedBus", topInteger(passengersPerBus),
-                        "leastUtilizedBus", bottomInteger(passengersPerBus),
-                        "highestRevenueBus", topBigDecimal(revenuePerBus),
-                        "highestPassengerVolumeBus", topInteger(passengersPerBus)
-                ),
-                "tripsPerBus", toChartLong(tripsPerBus, "plateNumber", "trips"),
-                "passengerDistributionPerBus", toChartInteger(passengersPerBus, "plateNumber", "passengers"),
-                "revenuePerBus", toChart(revenuePerBus, "plateNumber", "revenue")
-        );
-    }
-
-    private Map<String, Object> gpsAnalytics(List<DriverLocation> locationsInRange, List<Vehicle> vehicles) {
-        Map<String, Double> distancePerBus = locationsInRange.stream()
-                .collect(Collectors.groupingBy(DriverLocation::getPlateNumber,
-                        Collectors.collectingAndThen(Collectors.toList(), this::distanceForLocations)));
-        Map<String, Double> distancePerRoute = distancePerBus.entrySet().stream()
-                .collect(Collectors.toMap(e -> routeForPlate(vehicles, e.getKey()), Map.Entry::getValue, Double::sum));
-        double total = distancePerBus.values().stream().mapToDouble(Double::doubleValue).sum();
-        return mapOf(
-                "summary", mapOf(
-                        "totalDistanceTraveled", round(total),
-                        "averageTravelTime", null,
-                        "fastestTrip", null,
-                        "slowestTrip", null,
-                        "routeCoverageStatistics", null
-                ),
-                "distancePerBus", toChartDouble(distancePerBus, "plateNumber", "distanceKm"),
-                "distancePerRoute", toChartDouble(distancePerRoute, "route", "distanceKm"),
-                "distanceTraveledTrend", distanceTrend(locationsInRange),
-                "travelTimeAnalysis", List.of()
-        );
-    }
-
-    private Map<String, Object> queueTerminalAnalytics(List<Vehicle> vehicles, List<PassengerOnboard> onboardsInRange) {
-        long activeQueue = vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE).count();
-        return mapOf(
-                "summary", mapOf(
-                        "currentQueueLength", activeQueue,
-                        "averageQueueLength", null,
-                        "peakQueueHours", null,
-                        "averageWaitingTime", null,
-                        "averageArrivalTime", avgTripMinutes(onboardsInRange),
-                        "averageDepartureTime", null,
-                        "onTimeArrivals", null,
-                        "delayedArrivals", null,
-                        "arrivalAccuracyPercentage", null
-                ),
-                "queueTrend", List.of(),
-                "waitingTimeTrend", List.of(),
-                "arrivalPerformanceTrend", List.of()
-        );
-    }
-
-    private Map<String, Object> routeAnalytics(List<Vehicle> vehicles, List<DriverShift> shiftsInRange,
-                                               List<PassengerOnboard> onboardsInRange, List<Transaction> txInRange) {
-        Map<String, Integer> passengerPerRoute = countOnboardsByRouteMap(onboardsInRange);
-        Map<String, BigDecimal> revenuePerRoute = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> safeRoute(o.getShift().getVehicle()),
-                        Collectors.reducing(BigDecimal.ZERO, PassengerOnboard::getFare, BigDecimal::add)));
-        return mapOf(
-                "summary", mapOf(
-                        "mostPopularRoute", topInteger(passengerPerRoute),
-                        "leastPopularRoute", bottomInteger(passengerPerRoute),
-                        "highestRevenueRoute", topBigDecimal(revenuePerRoute),
-                        "averageTravelTimePerRoute", null,
-                        "routeEfficiencyScore", null
-                ),
-                "routePopularity", toChartInteger(passengerPerRoute, "route", "passengers"),
-                "passengerDistributionByRoute", toChartInteger(passengerPerRoute, "route", "passengers"),
-                "revenueByRoute", toChart(revenuePerRoute, "route", "revenue")
-        );
-    }
-
-    private Map<String, Object> driverAnalytics(List<Driver> drivers, List<DriverShift> shiftsInRange,
-                                                List<PassengerOnboard> onboardsInRange, List<Transaction> txInRange) {
-        Map<String, Long> trips = shiftsInRange.stream()
-                .collect(Collectors.groupingBy(s -> s.getDriver().getFullName(), Collectors.counting()));
-        Map<String, Integer> passengers = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> o.getShift().getDriver().getFullName(),
-                        Collectors.summingInt(PassengerOnboard::getPassengerCount)));
-        Map<String, BigDecimal> revenue = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> o.getShift().getDriver().getFullName(),
-                        Collectors.reducing(BigDecimal.ZERO, PassengerOnboard::getFare, BigDecimal::add)));
-        return mapOf(
-                "summary", mapOf(
-                        "tripsManaged", shiftsInRange.size(),
-                        "passengersServed", onboardsInRange.stream().mapToInt(PassengerOnboard::getPassengerCount).sum(),
-                        "revenueCollected", revenue.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add),
-                        "averageTripDuration", avgShiftMinutes(shiftsInRange),
-                        "onTimePerformance", null,
-                        "delayPercentage", null
-                ),
-                "driverPerformance", toChartLong(trips, "driver", "trips"),
-                "conductorPerformance", List.of(),
-                "tripCompletionStatistics", toChartLong(shiftsInRange.stream()
-                        .collect(Collectors.groupingBy(s -> s.getStatus().name(), Collectors.counting())), "status", "trips"),
-                "passengersServedByDriver", toChartInteger(passengers, "driver", "passengers"),
-                "revenueByDriver", toChart(revenue, "driver", "revenue")
-        );
-    }
-
-    private Map<String, Object> operationalAnalytics(List<Vehicle> vehicles, List<DriverShift> shiftsInRange,
-                                                     List<PassengerOnboard> onboardsInRange, List<Transaction> txInRange) {
-        long completed = shiftsInRange.stream().filter(s -> s.getStatus() == ShiftStatus.COMPLETED).count();
-        BigDecimal revenue = onboardsInRange.stream().map(PassengerOnboard::getFare).reduce(BigDecimal.ZERO, BigDecimal::add);
-        int passengers = onboardsInRange.stream().mapToInt(PassengerOnboard::getPassengerCount).sum();
-        Map<String, Double> occupancyPerBus = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> o.getShift().getVehicle().getPlateNumber(),
-                        Collectors.collectingAndThen(Collectors.toList(), list -> occupancy(list, list.get(0).getShift().getVehicle().getTotalCapacity()))));
-        Map<String, Double> occupancyPerRoute = onboardsInRange.stream()
-                .collect(Collectors.groupingBy(o -> safeRoute(o.getShift().getVehicle()),
-                        Collectors.collectingAndThen(Collectors.toList(), list -> occupancy(list,
-                                list.stream().mapToInt(o -> o.getShift().getVehicle().getTotalCapacity()).sum()))));
-        return mapOf(
-                "summary", mapOf(
-                        "totalTrips", shiftsInRange.size(),
-                        "completedTrips", completed,
-                        "cancelledTrips", shiftsInRange.stream().filter(s -> s.getStatus() == ShiftStatus.CANCELLED).count(),
-                        "averageRevenuePerTrip", shiftsInRange.isEmpty() ? BigDecimal.ZERO : revenue.divide(BigDecimal.valueOf(shiftsInRange.size()), 2, RoundingMode.HALF_UP),
-                        "averagePassengersPerTrip", shiftsInRange.isEmpty() ? 0 : round((double) passengers / shiftsInRange.size()),
-                        "averageFleetOccupancy", occupancyPerBus.values().stream().mapToDouble(Double::doubleValue).average().orElse(0)
-                ),
-                "occupancyPerBus", toChartDouble(occupancyPerBus, "plateNumber", "occupancyRate"),
-                "occupancyPerRoute", toChartDouble(occupancyPerRoute, "route", "occupancyRate"),
-                "occupancyTrend", List.of(),
-                "fleetUtilizationTrend", toChartDouble(occupancyPerBus, "plateNumber", "occupancyRate")
-        );
-    }
-
-    private Map<String, Object> predictiveAnalytics(List<Transaction> transactions, List<PassengerOnboard> onboards,
-                                                    List<Vehicle> vehicles) {
-        LocalDate today = LocalDate.now();
-        List<Transaction> last7Fare = fareTransactions(transactions).stream()
-                .filter(t -> t.getCreatedAt() != null && !t.getCreatedAt().toLocalDate().isBefore(today.minusDays(7)))
-                .toList();
-        List<Map<String, Object>> daily = sumTransactionsByDay(last7Fare);
-        double expectedPassengers = movingAverageCount(last7Fare, 7);
-        double expectedRevenue = movingAverageRevenue(last7Fare, 7);
-        List<Map<String, Object>> peak = peakHours(last7Fare);
-        Set<String> busyRoutes = onboards.stream()
-                .filter(o -> o.getBoardedAt() != null && !o.getBoardedAt().toLocalDate().isBefore(today.minusDays(7)))
-                .collect(Collectors.groupingBy(o -> safeRoute(o.getShift().getVehicle()), Collectors.counting()))
-                .entrySet().stream()
-                .filter(e -> e.getValue() >= Math.max(1, expectedPassengers / Math.max(1, vehicles.size())))
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        return mapOf(
-                "method", "7-day moving average from historical fare transactions and onboard records",
-                "expectedPassengersTomorrow", Math.round(expectedPassengers),
-                "expectedRevenueTomorrow", round(expectedRevenue),
-                "expectedPeakTravelHours", peak.stream().limit(3).toList(),
-                "routesRequiringAdditionalBuses", new ArrayList<>(busyRoutes),
-                "passengerDemandForecast", daily,
-                "revenueForecast", daily,
-                "routeDemandForecast", countOnboardsByRoute(onboards),
-                "peakHourForecast", peak
-        );
-    }
-
-    private Map<String, Object> dataSources() {
-        return mapOf(
-                "passengers", "passengers table",
-                "rfid", "passengers.rfid_uid and fare transactions",
-                "revenue", "transactions and passenger_onboards.fare",
-                "topUps", "topup_requests and TOPUP transactions",
-                "buses", "vehicles, driver_shifts, passenger_onboards",
-                "gps", "driver_locations and vehicle live coordinates",
-                "queueTerminal", "vehicle live status and passenger_onboards timestamps; waiting-time fields are not currently stored",
-                "routes", "vehicles.route through shifts/onboard records",
-                "drivers", "drivers, driver_shifts, passenger_onboards",
-                "predictive", "moving average over transactions and passenger_onboards"
-        );
-    }
-
-    private DateWindow resolveWindow(String range, LocalDate from, LocalDate to) {
-        LocalDate today = LocalDate.now();
-        LocalDate start;
-        LocalDate end = to != null ? to : today;
-        switch (range == null ? "month" : range.toLowerCase(Locale.ROOT)) {
-            case "daily", "day" -> start = today;
-            case "weekly", "week" -> start = today.with(WeekFields.ISO.dayOfWeek(), 1);
-            case "yearly", "year" -> start = today.withDayOfYear(1);
-            case "custom" -> start = from != null ? from : today.withDayOfMonth(1);
-            default -> start = today.withDayOfMonth(1);
+    private List<Map<String, Object>> revenueTrend(List<Transaction> successfulFare, DateWindow window) {
+        Map<LocalDate, BigDecimal> byDate = successfulFare.stream()
+                .filter(tx -> tx.getCreatedAt() != null)
+                .collect(Collectors.groupingBy(tx -> tx.getCreatedAt().toLocalDate(), LinkedHashMap::new,
+                        Collectors.reducing(BigDecimal.ZERO, Transaction::getAmount, BigDecimal::add)));
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (LocalDate day = window.start().toLocalDate(); !day.isAfter(window.end().toLocalDate()); day = day.plusDays(1)) {
+            rows.add(mapOf("date", day.format(DAY_KEY), "name", day.format(DAY_LABEL), "revenue", byDate.getOrDefault(day, BigDecimal.ZERO)));
         }
-        if (from != null && (range == null || !"custom".equalsIgnoreCase(range))) start = from;
-        return new DateWindow(start.atStartOfDay(), end.plusDays(1).atStartOfDay().minusNanos(1));
+        return rows;
+    }
+
+    private List<Map<String, Object>> transactionsByPaymentMethod(List<Transaction> successfulFare) {
+        Map<String, List<Transaction>> grouped = successfulFare.stream()
+                .collect(Collectors.groupingBy(this::paymentMethod, LinkedHashMap::new, Collectors.toList()));
+        BigDecimal totalRevenue = sumAmounts(successfulFare);
+        long totalCount = successfulFare.size();
+        List<String> methods = List.of("RFID", "QR", "NFC");
+        return methods.stream()
+                .map(method -> {
+                    List<Transaction> txs = grouped.getOrDefault(method, List.of());
+                    BigDecimal revenue = sumAmounts(txs);
+                    return mapOf(
+                            "name", method,
+                            "method", method,
+                            "count", txs.size(),
+                            "revenue", revenue,
+                            "share", totalCount == 0 ? 0 : percent(txs.size(), totalCount),
+                            "revenueShare", totalRevenue.compareTo(BigDecimal.ZERO) == 0 ? 0 : revenue.multiply(BigDecimal.valueOf(100)).divide(totalRevenue, 2, RoundingMode.HALF_UP)
+                    );
+                })
+                .filter(row -> ((Number) row.get("count")).longValue() > 0)
+                .toList();
+    }
+
+    private List<Map<String, Object>> passengerActivityTrend(List<Transaction> successfulFare) {
+        Map<LocalDate, Long> byDate = successfulFare.stream()
+                .filter(tx -> tx.getCreatedAt() != null && tx.getPassenger() != null)
+                .collect(Collectors.groupingBy(tx -> tx.getCreatedAt().toLocalDate(), Collectors.mapping(
+                        tx -> tx.getPassenger().getId(), Collectors.collectingAndThen(Collectors.toSet(), set -> (long) set.size()))));
+        return byDate.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> mapOf("date", e.getKey().format(DAY_KEY), "name", e.getKey().format(DAY_LABEL), "passengers", e.getValue()))
+                .toList();
+    }
+
+    private List<Map<String, Object>> peakTravelHours(List<Transaction> successfulFare, ZoneId zone) {
+        return successfulFare.stream()
+                .filter(tx -> tx.getCreatedAt() != null)
+                .collect(Collectors.groupingBy(tx -> tx.getCreatedAt().atZone(zone).getHour(), Collectors.counting()))
+                .entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> mapOf("hour", e.getKey(), "name", hourLabel(e.getKey()), "count", e.getValue()))
+                .toList();
+    }
+
+    private List<Map<String, Object>> tripsAndPassengersByBus(List<Transaction> successfulFare,
+                                                              List<DriverShift> shifts) {
+        Map<String, Long> completedTrips = shifts.stream()
+                .filter(s -> s.getStatus() == ShiftStatus.COMPLETED && s.getVehicle() != null)
+                .collect(Collectors.groupingBy(s -> s.getVehicle().getPlateNumber(), Collectors.counting()));
+        Map<String, Long> passengers = successfulFare.stream()
+                .map(this::transactionBus)
+                .filter(bus -> bus != null && !bus.isBlank())
+                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
+        Set<String> plates = new LinkedHashSet<>();
+        plates.addAll(completedTrips.keySet());
+        plates.addAll(passengers.keySet());
+        return plates.stream()
+                .sorted()
+                .limit(12)
+                .map(plate -> mapOf("name", plate, "completedTrips", completedTrips.getOrDefault(plate, 0L),
+                        "passengersServed", passengers.getOrDefault(plate, 0L)))
+                .toList();
+    }
+
+    private List<Map<String, Object>> queueLengthByTerminal(List<Vehicle> vehicles) {
+        long active = vehicles.stream().filter(v -> v.getStatus() == VehicleStatus.ACTIVE).count();
+        long inactive = vehicles.stream().filter(v -> v.getStatus() != VehicleStatus.ACTIVE).count();
+        return List.of(
+                terminalQueue("Active route queue", active),
+                terminalQueue("Inactive/staging queue", inactive)
+        );
+    }
+
+    private Map<String, Object> terminalQueue(String name, long count) {
+        String status = count >= 21 ? "Congested" : count >= 11 ? "Moderate" : "Normal";
+        return mapOf("name", name, "terminal", name, "queueCount", count, "status", status);
+    }
+
+    private List<Map<String, Object>> systemAlerts(List<Device> devices, List<DriverLocation> locations, ZoneId zone) {
+        List<Map<String, Object>> alerts = new ArrayList<>();
+        devices.stream().filter(this::offlineDevice).limit(5).forEach(device -> alerts.add(mapOf(
+                "severity", "Critical",
+                "title", label(device.getDeviceType() == null ? "Device" : device.getDeviceType().name()) + " offline",
+                "message", device.getDeviceName() + " has no valid heartbeat within " + OFFLINE_DEVICE_MINUTES + " minutes.",
+                "time", formatDateTime(device.getLastSeenAt(), zone)
+        )));
+        latestLocationByPlate(locations).values().stream()
+                .filter(location -> location.getRecordedAt() != null && location.getRecordedAt().isBefore(LocalDateTime.now().minusMinutes(ACTIVE_BUS_MINUTES)))
+                .limit(5)
+                .forEach(location -> alerts.add(mapOf(
+                        "severity", "Warning",
+                        "title", "Missing GPS update",
+                        "message", location.getPlateNumber() + " has no GPS update within " + ACTIVE_BUS_MINUTES + " minutes.",
+                        "time", formatDateTime(location.getRecordedAt(), zone)
+                )));
+        return alerts.stream().limit(10).toList();
+    }
+
+    private Map<String, Object> recentFareTransaction(Transaction tx, ZoneId zone) {
+        return mapOf(
+                "time", formatDateTime(tx.getCreatedAt(), zone),
+                "maskedCardNumber", tx.getPassenger() == null ? "" : mask(tx.getPassenger().getCardNumber()),
+                "paymentMethod", paymentMethod(tx),
+                "bus", transactionBus(tx),
+                "amount", tx.getAmount(),
+                "status", label(tx.getStatus() == null ? null : tx.getStatus().name())
+        );
+    }
+
+    private long activeBusCount(List<Vehicle> vehicles, List<DriverShift> shifts, List<DriverLocation> locations) {
+        LocalDateTime cutoff = LocalDateTime.now().minusMinutes(ACTIVE_BUS_MINUTES);
+        Set<String> activePlates = new LinkedHashSet<>();
+        shifts.stream()
+                .filter(s -> s.getStatus() == ShiftStatus.ACTIVE && s.getVehicle() != null)
+                .map(s -> s.getVehicle().getPlateNumber())
+                .forEach(activePlates::add);
+        latestLocationByPlate(locations).values().stream()
+                .filter(l -> l.getRecordedAt() != null && !l.getRecordedAt().isBefore(cutoff))
+                .map(DriverLocation::getPlateNumber)
+                .forEach(activePlates::add);
+        return activePlates.size();
+    }
+
+    private boolean fareTransaction(Transaction tx) {
+        return tx != null && (tx.getType() == TransactionType.FARE_DEDUCTION || tx.getType() == TransactionType.RIDE_FARE);
+    }
+
+    private boolean successful(Transaction tx) {
+        return tx.getStatus() == TransactionStatus.SUCCESS || tx.getStatus() == TransactionStatus.COMPLETED;
+    }
+
+    private boolean openTicket(SupportTicket ticket) {
+        return ticket.getStatus() == SupportTicketStatus.PENDING || ticket.getStatus() == SupportTicketStatus.IN_REVIEW;
+    }
+
+    private boolean offlineDevice(Device device) {
+        if (device.getStatus() != DeviceStatus.ACTIVE || device.getRevokedAt() != null) {
+            return false;
+        }
+        return device.getLastSeenAt() == null || device.getLastSeenAt().isBefore(LocalDateTime.now().minusMinutes(OFFLINE_DEVICE_MINUTES));
     }
 
     private boolean inWindow(LocalDateTime value, DateWindow window) {
         return value != null && !value.isBefore(window.start()) && !value.isAfter(window.end());
     }
 
-    private boolean sameDay(LocalDateTime value, LocalDate day) {
-        return value != null && value.toLocalDate().equals(day);
+    private boolean vehicleMatches(Vehicle vehicle, String bus, String route) {
+        if (vehicle == null) return bus == null && route == null;
+        boolean busMatches = bus == null || bus.equalsIgnoreCase(vehicle.getPlateNumber()) || bus.equals(String.valueOf(vehicle.getId()));
+        boolean routeMatches = route == null || route.equalsIgnoreCase(vehicle.getRoute());
+        return busMatches && routeMatches;
     }
 
-    private boolean dateBetween(LocalDateTime value, LocalDate start, LocalDate end) {
-        return value != null && !value.toLocalDate().isBefore(start) && !value.toLocalDate().isAfter(end);
+    private boolean transactionVehicleMatches(Transaction tx, String bus, String route, List<Vehicle> vehicles) {
+        if (bus == null && route == null) return true;
+        String txBus = transactionBus(tx);
+        if (txBus == null || txBus.isBlank()) return false;
+        if (bus != null && !txBus.equalsIgnoreCase(bus)) return false;
+        if (route == null) return true;
+        String routeSnapshot = tx.getRouteSnapshot();
+        if (routeSnapshot != null && route.equalsIgnoreCase(routeSnapshot)) {
+            return true;
+        }
+        return tx.getVehicle() != null
+                ? route.equalsIgnoreCase(tx.getVehicle().getRoute())
+                : vehicles.stream()
+                .filter(vehicle -> vehicle.getPlateNumber() != null && vehicle.getPlateNumber().equalsIgnoreCase(txBus))
+                .anyMatch(vehicle -> route.equalsIgnoreCase(vehicle.getRoute()));
     }
 
-    private List<Transaction> fareTransactions(List<Transaction> transactions) {
-        return transactions.stream()
-                .filter(t -> t.getType() == TransactionType.FARE_DEDUCTION || t.getType() == TransactionType.RIDE_FARE)
-                .toList();
+    private boolean paymentMethodMatches(Transaction tx, String method) {
+        return method == null || paymentMethod(tx).equalsIgnoreCase(method);
     }
 
-    private boolean successful(Transaction t) {
-        return t.getStatus() == TransactionStatus.SUCCESS || t.getStatus() == TransactionStatus.COMPLETED;
+    private boolean paymentAttemptMethodMatches(FarePaymentAttempt attempt, String method) {
+        return method == null || (attempt.getPaymentMethod() != null
+                && attempt.getPaymentMethod().name().equalsIgnoreCase(method));
     }
 
-    private BigDecimal fareRevenue(List<Transaction> transactions) {
-        return sumAmount(fareTransactions(transactions).stream().filter(this::successful).toList());
+    private boolean paymentAttemptVehicleMatches(FarePaymentAttempt attempt, String bus, String route) {
+        if (bus == null && route == null) return true;
+        Vehicle vehicle = attempt.getVehicle();
+        if (vehicle == null && attempt.getDriverShift() != null) {
+            vehicle = attempt.getDriverShift().getVehicle();
+        }
+        String plate = vehicle == null ? null : vehicle.getPlateNumber();
+        if (bus != null && (plate == null || !bus.equalsIgnoreCase(plate))) {
+            return false;
+        }
+        if (route == null) {
+            return true;
+        }
+        if (attempt.getRouteSnapshot() != null && route.equalsIgnoreCase(attempt.getRouteSnapshot())) {
+            return true;
+        }
+        return vehicle != null && route.equalsIgnoreCase(vehicle.getRoute());
     }
 
-    private BigDecimal sumAmount(List<Transaction> transactions) {
-        return transactions.stream().map(Transaction::getAmount).filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    private String paymentMethod(Transaction tx) {
+        if (tx.getPaymentMethod() != null) {
+            return tx.getPaymentMethod().name();
+        }
+        String description = tx.getDescription() == null ? "" : tx.getDescription().toUpperCase(Locale.ROOT);
+        String reference = tx.getReferenceNumber() == null ? "" : tx.getReferenceNumber().toUpperCase(Locale.ROOT);
+        if (description.contains("NFC") || reference.startsWith("NFC-")) return "NFC";
+        if (description.contains("QR") || reference.startsWith("QR-")) return "QR";
+        return "RFID";
     }
 
-    private BigDecimal averageAmount(List<Transaction> transactions) {
-        if (transactions.isEmpty()) return BigDecimal.ZERO;
-        return sumAmount(transactions).divide(BigDecimal.valueOf(transactions.size()), 2, RoundingMode.HALF_UP);
+    private String transactionBus(Transaction tx) {
+        if (tx.getVehicle() != null && tx.getVehicle().getPlateNumber() != null) {
+            return tx.getVehicle().getPlateNumber();
+        }
+        if (tx.getDriverShift() != null
+                && tx.getDriverShift().getVehicle() != null
+                && tx.getDriverShift().getVehicle().getPlateNumber() != null) {
+            return tx.getDriverShift().getVehicle().getPlateNumber();
+        }
+        return busFromDescription(tx);
     }
 
-    private long distinctFarePassengers(List<Transaction> transactions) {
-        return fareTransactions(transactions).stream().map(t -> t.getPassenger().getId()).distinct().count();
-    }
-
-    private boolean routeMatches(Vehicle vehicle, String route) {
-        return route == null || route.isBlank() || (vehicle != null && route.equalsIgnoreCase(vehicle.getRoute()));
-    }
-
-    private boolean busMatches(Vehicle vehicle, String bus) {
-        return bus == null || bus.isBlank() || (vehicle != null && bus.equalsIgnoreCase(vehicle.getPlateNumber()));
+    private String busFromDescription(Transaction tx) {
+        if (tx.getDescription() == null || !tx.getDescription().contains("|")) {
+            return "";
+        }
+        String[] parts = tx.getDescription().split("\\|");
+        return parts.length < 2 ? "" : parts[1].trim();
     }
 
     private Map<String, DriverLocation> latestLocationByPlate(List<DriverLocation> locations) {
         return locations.stream()
-                .filter(location -> location.getPlateNumber() != null && location.getRecordedAt() != null)
-                .collect(Collectors.toMap(
-                        location -> location.getPlateNumber().toUpperCase(),
-                        Function.identity(),
-                        (existing, replacement) -> replacement.getRecordedAt().isAfter(existing.getRecordedAt())
-                                ? replacement
-                                : existing
-                ));
+                .filter(l -> l.getPlateNumber() != null && l.getRecordedAt() != null)
+                .collect(Collectors.toMap(l -> l.getPlateNumber().toUpperCase(Locale.ROOT), Function.identity(),
+                        (a, b) -> a.getRecordedAt().isAfter(b.getRecordedAt()) ? a : b));
     }
 
-    private boolean atTerminal(Vehicle vehicle, Map<String, DriverLocation> latestLocationByPlate) {
-        if (vehicle == null || vehicle.getPlateNumber() == null) {
-            return false;
-        }
-        DriverLocation location = latestLocationByPlate.get(vehicle.getPlateNumber().toUpperCase());
-        return location != null
-                && location.getLatitude() != null
-                && location.getLongitude() != null
-                && (distance(location.getLatitude(), location.getLongitude(), 13.954781, 121.163096) <= 5.0
-                || distance(location.getLatitude(), location.getLongitude(), 13.790391, 121.062721) <= 5.0);
-    }
-
-    private String safeRoute(Vehicle vehicle) {
-        return vehicle == null || vehicle.getRoute() == null || vehicle.getRoute().isBlank() ? "Unassigned Route" : vehicle.getRoute();
-    }
-
-    private String routeForPlate(List<Vehicle> vehicles, String plate) {
-        return vehicles.stream().filter(v -> v.getPlateNumber().equalsIgnoreCase(plate))
-                .findFirst().map(this::safeRoute).orElse("Unassigned Route");
-    }
-
-    private Double avgTripMinutes(List<PassengerOnboard> onboards) {
-        OptionalDouble average = onboards.stream()
-                .filter(o -> o.getBoardedAt() != null && o.getDroppedOffAt() != null)
-                .mapToLong(o -> ChronoUnit.MINUTES.between(o.getBoardedAt(), o.getDroppedOffAt()))
-                .average();
-        return average.isPresent() ? round(average.getAsDouble()) : null;
-    }
-
-    private Double avgShiftMinutes(List<DriverShift> shifts) {
-        OptionalDouble average = shifts.stream()
-                .filter(s -> s.getShiftStart() != null && s.getShiftEnd() != null)
-                .mapToLong(s -> ChronoUnit.MINUTES.between(s.getShiftStart(), s.getShiftEnd()))
-                .average();
-        return average.isPresent() ? round(average.getAsDouble()) : null;
-    }
-
-    private List<Map<String, Object>> countTransactionsByBucket(List<Transaction> transactions, DateWindow window) {
-        return transactions.stream()
-                .filter(t -> t.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(t -> bucketLabel(t.getCreatedAt()), TreeMap::new, Collectors.counting()))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "count", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> sumTransactionsByBucket(List<Transaction> transactions, DateWindow window) {
-        return transactions.stream()
-                .filter(t -> t.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(t -> bucketLabel(t.getCreatedAt()), TreeMap::new,
-                        Collectors.reducing(BigDecimal.ZERO, Transaction::getAmount, BigDecimal::add)))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "revenue", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> sumTransactionsByDay(List<Transaction> transactions) {
-        return transactions.stream()
-                .filter(t -> t.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(t -> t.getCreatedAt().toLocalDate().format(DAY_LABEL), TreeMap::new,
-                        Collectors.reducing(BigDecimal.ZERO, Transaction::getAmount, BigDecimal::add)))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "revenue", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> sumTransactionsByMonth(List<Transaction> transactions) {
-        return transactions.stream()
-                .filter(t -> t.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(t -> t.getCreatedAt().format(MONTH_LABEL), TreeMap::new,
-                        Collectors.reducing(BigDecimal.ZERO, Transaction::getAmount, BigDecimal::add)))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "revenue", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> countTopUpsByMonth(List<TopUpRequest> topUps) {
-        return topUps.stream()
-                .filter(t -> t.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(t -> t.getCreatedAt().format(MONTH_LABEL), TreeMap::new, Collectors.counting()))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "count", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> countByDay(List<LocalDateTime> values) {
-        return values.stream().filter(Objects::nonNull)
-                .collect(Collectors.groupingBy(v -> v.toLocalDate().format(DAY_LABEL), TreeMap::new, Collectors.counting()))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "count", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> cumulativePassengers(List<Passenger> passengers) {
-        List<LocalDate> dates = passengers.stream().map(Passenger::getCreatedAt).filter(Objects::nonNull)
-                .map(LocalDateTime::toLocalDate).sorted().toList();
-        List<Map<String, Object>> result = new ArrayList<>();
-        int running = 0;
-        LocalDate last = null;
-        for (LocalDate date : dates) {
-            running++;
-            if (!date.equals(last)) {
-                result.add(mapOf("name", date.format(DAY_LABEL), "count", running));
-                last = date;
-            } else {
-                result.set(result.size() - 1, mapOf("name", date.format(DAY_LABEL), "count", running));
+    private DateWindow resolveWindow(String range, LocalDate startDate, LocalDate endDate, ZoneId zone) {
+        LocalDate today = LocalDate.now(zone);
+        String value = range == null ? "last7" : range.toLowerCase(Locale.ROOT);
+        LocalDate start;
+        LocalDate end = today;
+        switch (value) {
+            case "today", "daily", "day" -> start = today;
+            case "last30" -> start = today.minusDays(29);
+            case "thismonth", "monthly", "month" -> start = today.withDayOfMonth(1);
+            case "custom" -> {
+                start = startDate == null ? today.minusDays(6) : startDate;
+                end = endDate == null ? today : endDate;
             }
+            default -> start = today.minusDays(6);
         }
-        return result;
-    }
-
-    private List<Map<String, Object>> peakHours(List<Transaction> transactions) {
-        return transactions.stream().filter(t -> t.getCreatedAt() != null)
-                .collect(Collectors.groupingBy(t -> String.format("%02d:00", t.getCreatedAt().getHour()), TreeMap::new, Collectors.counting()))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "count", e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> countOnboardsByRoute(List<PassengerOnboard> onboards) {
-        return toChartInteger(countOnboardsByRouteMap(onboards), "route", "passengers");
-    }
-
-    private Map<String, Integer> countOnboardsByRouteMap(List<PassengerOnboard> onboards) {
-        return onboards.stream()
-                .collect(Collectors.groupingBy(o -> safeRoute(o.getShift().getVehicle()),
-                        Collectors.summingInt(PassengerOnboard::getPassengerCount)));
-    }
-
-    private String bucketLabel(LocalDateTime time) {
-        return time.toLocalDate().format(DAY_LABEL);
-    }
-
-    private double distanceForLocations(List<DriverLocation> points) {
-        List<DriverLocation> ordered = points.stream()
-                .filter(p -> p.getLatitude() != null && p.getLongitude() != null && p.getRecordedAt() != null)
-                .sorted(Comparator.comparing(DriverLocation::getRecordedAt)).toList();
-        double total = 0;
-        for (int i = 1; i < ordered.size(); i++) {
-            DriverLocation a = ordered.get(i - 1);
-            DriverLocation b = ordered.get(i);
-            total += distance(a.getLatitude(), a.getLongitude(), b.getLatitude(), b.getLongitude());
+        if (end.isAfter(today)) {
+            throw new IllegalArgumentException("Future date ranges are not supported.");
         }
-        return round(total);
+        if (start.isAfter(end)) {
+            throw new IllegalArgumentException("Start date cannot be after end date.");
+        }
+        return new DateWindow(start.atStartOfDay(), end.plusDays(1).atStartOfDay().minusNanos(1));
     }
 
-    private List<Map<String, Object>> distanceTrend(List<DriverLocation> locations) {
-        return locations.stream().filter(l -> l.getRecordedAt() != null)
-                .collect(Collectors.groupingBy(l -> l.getRecordedAt().toLocalDate().format(DAY_LABEL), TreeMap::new,
-                        Collectors.collectingAndThen(Collectors.toList(), this::distanceForLocations)))
-                .entrySet().stream().map(e -> mapOf("name", e.getKey(), "distanceKm", e.getValue())).toList();
+    private ZoneId resolveZone(String timezone) {
+        try {
+            return timezone == null || timezone.isBlank() ? DEFAULT_ZONE : ZoneId.of(timezone);
+        } catch (Exception ignored) {
+            return DEFAULT_ZONE;
+        }
     }
 
-    private double occupancy(List<PassengerOnboard> records, int capacity) {
-        int passengers = records.stream().mapToInt(PassengerOnboard::getPassengerCount).sum();
-        return capacity <= 0 ? 0 : round((passengers * 100.0) / capacity);
+    private Map<String, Object> options(List<Vehicle> vehicles) {
+        List<Map<String, Object>> buses = vehicles.stream()
+                .sorted(Comparator.comparing(Vehicle::getPlateNumber, Comparator.nullsLast(String::compareToIgnoreCase)))
+                .map(v -> mapOf("id", v.getPlateNumber(), "label", v.getPlateNumber()))
+                .toList();
+        List<Map<String, Object>> routes = vehicles.stream()
+                .map(Vehicle::getRoute)
+                .filter(route -> route != null && !route.isBlank())
+                .distinct()
+                .sorted()
+                .map(route -> mapOf("id", route, "label", route))
+                .toList();
+        return mapOf("buses", buses, "routes", routes, "paymentMethods", List.of("RFID", "QR", "NFC"));
     }
 
-    private double movingAverageCount(List<Transaction> transactions, int days) {
-        return round(transactions.size() / (double) Math.max(1, days));
+    private Map<String, Object> filters(DateWindow window, String range, String bus, String route, String paymentMethod, ZoneId zone) {
+        return mapOf(
+                "range", range == null ? "last7" : range,
+                "startDate", window.start().toLocalDate(),
+                "endDate", window.end().toLocalDate(),
+                "timezone", zone.getId(),
+                "busId", bus,
+                "routeId", route,
+                "paymentMethod", paymentMethod
+        );
     }
 
-    private double movingAverageRevenue(List<Transaction> transactions, int days) {
-        return round(sumAmount(transactions).doubleValue() / Math.max(1, days));
+    private Map<String, Object> definitions() {
+        return mapOf(
+                "fareRevenue", "Sum of successful FARE_DEDUCTION and RIDE_FARE transactions only.",
+                "successfulFareTransaction", "Transaction status SUCCESS or COMPLETED and type FARE_DEDUCTION or RIDE_FARE.",
+                "activePassenger", "Distinct passenger with at least one successful fare transaction in the selected period.",
+                "activeBus", "Vehicle with active status, active shift, or GPS update within " + ACTIVE_BUS_MINUTES + " minutes.",
+                "pendingTopUp", "Top-up request with PENDING or PROCESSING status.",
+                "openTicket", "Support ticket with PENDING or IN_REVIEW status.",
+                "offlineDevice", "Active non-revoked device with no heartbeat within " + OFFLINE_DEVICE_MINUTES + " minutes."
+        );
     }
 
-    private double distance(double la1, double lo1, double la2, double lo2) {
-        double dLat = Math.toRadians(la2 - la1);
-        double dLon = Math.toRadians(lo2 - lo1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-                + Math.cos(Math.toRadians(la1)) * Math.cos(Math.toRadians(la2))
-                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        return 6371.0 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    private BigDecimal sumAmounts(List<Transaction> transactions) {
+        return transactions.stream()
+                .map(Transaction::getAmount)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    private double round(double value) {
-        return Math.round(value * 100.0) / 100.0;
+    private BigDecimal percent(long numerator, long denominator) {
+        if (denominator == 0) return BigDecimal.ZERO;
+        return BigDecimal.valueOf(numerator)
+                .multiply(BigDecimal.valueOf(100))
+                .divide(BigDecimal.valueOf(denominator), 2, RoundingMode.HALF_UP);
     }
 
-    private Object topBigDecimal(Map<String, BigDecimal> values) {
-        return values.entrySet().stream().max(Map.Entry.comparingByValue())
-                .map(e -> mapOf("name", e.getKey(), "value", e.getValue())).orElse(null);
+    private String formatDateTime(LocalDateTime value, ZoneId zone) {
+        if (value == null) return "";
+        return value.atZone(zone).format(DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a", Locale.ENGLISH));
     }
 
-    private Object topInteger(Map<String, Integer> values) {
-        return values.entrySet().stream().max(Map.Entry.comparingByValue())
-                .map(e -> mapOf("name", e.getKey(), "value", e.getValue())).orElse(null);
+    private String hourLabel(int hour) {
+        int display = hour % 12 == 0 ? 12 : hour % 12;
+        return display + " " + (hour < 12 ? "AM" : "PM");
     }
 
-    private Object bottomInteger(Map<String, Integer> values) {
-        return values.entrySet().stream().min(Map.Entry.comparingByValue())
-                .map(e -> mapOf("name", e.getKey(), "value", e.getValue())).orElse(null);
+    private String label(String value) {
+        if (value == null || value.isBlank()) return "";
+        String[] parts = value.toLowerCase(Locale.ROOT).split("_");
+        StringBuilder out = new StringBuilder();
+        for (String part : parts) {
+            if (part.isBlank()) continue;
+            if (!out.isEmpty()) out.append(' ');
+            out.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+        }
+        return out.toString();
     }
 
-    private List<Map<String, Object>> toChart(Map<String, BigDecimal> values, String labelKey, String valueKey) {
-        return values.entrySet().stream().map(e -> mapOf(labelKey, e.getKey(), "name", e.getKey(), valueKey, e.getValue())).toList();
+    private String mask(String value) {
+        if (value == null || value.isBlank()) return "";
+        String trimmed = value.trim();
+        int visible = Math.min(4, trimmed.length());
+        return "*".repeat(Math.max(0, trimmed.length() - visible)) + trimmed.substring(trimmed.length() - visible);
     }
 
-    private List<Map<String, Object>> toChartLong(Map<String, Long> values, String labelKey, String valueKey) {
-        return values.entrySet().stream().map(e -> mapOf(labelKey, e.getKey(), "name", e.getKey(), valueKey, e.getValue())).toList();
+    private String normalizePaymentMethod(String value) {
+        String clean = blankToNull(value);
+        if (clean == null || "all".equalsIgnoreCase(clean)) return null;
+        return clean.toUpperCase(Locale.ROOT);
     }
 
-    private List<Map<String, Object>> toChartInteger(Map<String, Integer> values, String labelKey, String valueKey) {
-        return values.entrySet().stream().map(e -> mapOf(labelKey, e.getKey(), "name", e.getKey(), valueKey, e.getValue())).toList();
-    }
-
-    private List<Map<String, Object>> toChartDouble(Map<String, Double> values, String labelKey, String valueKey) {
-        return values.entrySet().stream().map(e -> mapOf(labelKey, e.getKey(), "name", e.getKey(), valueKey, e.getValue())).toList();
-    }
-
-    private Map<String, Object> filters(DateWindow window, String range, String route, String bus) {
-        return mapOf("range", range == null ? "month" : range, "from", window.start().toLocalDate(),
-                "to", window.end().toLocalDate(), "route", route, "bus", bus);
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() || "all".equalsIgnoreCase(value) ? null : value.trim();
     }
 
     private Map<String, Object> mapOf(Object... values) {

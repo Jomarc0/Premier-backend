@@ -12,6 +12,7 @@ import com.premier.model.*;
 import com.premier.repository.FareQrTokenRepository;
 import com.premier.repository.PassengerRepository;
 import com.premier.repository.TransactionRepository;
+import com.premier.payment.service.FarePaymentAttemptService;
 import com.premier.rfid.DeviceFareRequest;
 import com.premier.response.ApiResponse;
 import com.premier.response.FarePaymentResponse;
@@ -58,6 +59,7 @@ public class FarePaymentService {
     private final PassengerOnboardRepository onboardRepository;
     private final FirebaseService firebaseService;
     private final DeviceService deviceService;
+    private final FarePaymentAttemptService farePaymentAttemptService;
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, LocalDateTime> cooldownMap = new ConcurrentHashMap<>();
@@ -135,37 +137,42 @@ public class FarePaymentService {
 
     @Transactional
     public ApiResponse<FarePaymentResponse> processQrPayment(String payload, String plateNumber) {
-        String rawToken = normalizeQrPayload(payload);
-        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
+        try {
+            String rawToken = normalizeQrPayload(payload);
+            FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
+                    .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
 
-        if (token.getStatus() == FareQrTokenStatus.USED) {
-            throw new RuntimeException("QR fare token has already been used.");
-        }
+            if (token.getStatus() == FareQrTokenStatus.USED) {
+                throw new RuntimeException("QR fare token has already been used.");
+            }
 
-        if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
-            throw new RuntimeException("QR fare token expired. Please generate a new one.");
-        }
+            if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
+                throw new RuntimeException("QR fare token expired. Please generate a new one.");
+            }
 
-        if (token.getExpiresAt().isBefore(nowUtc())) {
-            token.setStatus(FareQrTokenStatus.EXPIRED);
+            if (token.getExpiresAt().isBefore(nowUtc())) {
+                token.setStatus(FareQrTokenStatus.EXPIRED);
+                fareQrTokenRepository.save(token);
+                throw new RuntimeException("QR fare token expired. Please generate a new one.");
+            }
+
+            ApiResponse<FarePaymentResponse> response = processPassengerFare(
+                    token.getPassenger().getId(),
+                    null,
+                    "QR",
+                    plateNumber,
+                    false);
+
+            token.setStatus(FareQrTokenStatus.USED);
+            token.setUsedAt(LocalDateTime.now());
+            token.setUsedReferenceNumber(response.getData().getReferenceNumber());
             fareQrTokenRepository.save(token);
-            throw new RuntimeException("QR fare token expired. Please generate a new one.");
+
+            return response;
+        } catch (RuntimeException ex) {
+            recordPaymentFailure(PaymentMethod.QR, null, null, plateNumber, null, null, ex);
+            throw ex;
         }
-
-        ApiResponse<FarePaymentResponse> response = processPassengerFare(
-                token.getPassenger().getId(),
-                null,
-                "QR",
-                plateNumber,
-                false);
-
-        token.setStatus(FareQrTokenStatus.USED);
-        token.setUsedAt(LocalDateTime.now());
-        token.setUsedReferenceNumber(response.getData().getReferenceNumber());
-        fareQrTokenRepository.save(token);
-
-        return response;
     }
 
     @Transactional
@@ -204,157 +211,190 @@ public class FarePaymentService {
     @Transactional
     public ApiResponse<FarePaymentResponse> processQrPayment(DeviceFareRequest request,
                                                              DevicePrincipal device) {
-        requireDeviceRequest(request);
-        String key = idempotencyKey(request);
-        return transactionRepository.findByIdempotencyKey(key)
-                .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "QR")))
-                .orElseGet(() -> {
-                    validateDevicePaymentRequest(request, device);
-                    String rawToken = normalizeQrPayload(request.getPayload());
-                    FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                            .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
+        try {
+            requireDeviceRequest(request);
+            String key = idempotencyKey(request);
+            return transactionRepository.findByIdempotencyKey(key)
+                    .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "QR")))
+                    .orElseGet(() -> {
+                        validateDevicePaymentRequest(request, device);
+                        String rawToken = normalizeQrPayload(request.getPayload());
+                        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
+                                .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
 
-                    if (token.getStatus() == FareQrTokenStatus.USED) {
-                        throw new RuntimeException("QR fare token has already been used.");
-                    }
-                    if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc())) {
-                        token.setStatus(FareQrTokenStatus.EXPIRED);
+                        if (token.getStatus() == FareQrTokenStatus.USED) {
+                            throw new RuntimeException("QR fare token has already been used.");
+                        }
+                        if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc())) {
+                            token.setStatus(FareQrTokenStatus.EXPIRED);
+                            fareQrTokenRepository.save(token);
+                            throw new RuntimeException("QR fare token expired. Please generate a new one.");
+                        }
+
+                        ApiResponse<FarePaymentResponse> response = processPassengerFare(
+                                token.getPassenger().getId(),
+                                null,
+                                "QR",
+                                request.getPlateNumber(),
+                                false,
+                                key,
+                                device,
+                                request);
+
+                        token.setStatus(FareQrTokenStatus.USED);
+                        token.setUsedAt(LocalDateTime.now());
+                        token.setUsedReferenceNumber(response.getData().getReferenceNumber());
                         fareQrTokenRepository.save(token);
-                        throw new RuntimeException("QR fare token expired. Please generate a new one.");
-                    }
-
-                    ApiResponse<FarePaymentResponse> response = processPassengerFare(
-                            token.getPassenger().getId(),
-                            null,
-                            "QR",
-                            request.getPlateNumber(),
-                            false,
-                            key,
-                            device,
-                            request);
-
-                    token.setStatus(FareQrTokenStatus.USED);
-                    token.setUsedAt(LocalDateTime.now());
-                    token.setUsedReferenceNumber(response.getData().getReferenceNumber());
-                    fareQrTokenRepository.save(token);
-                    return response;
-                });
+                        return response;
+                    });
+        } catch (RuntimeException ex) {
+            recordPaymentFailure(PaymentMethod.QR, null, null, request != null ? request.getPlateNumber() : null,
+                    device != null ? device.deviceId() : null, request, ex);
+            throw ex;
+        }
     }
 
     @Transactional
     public ApiResponse<FarePaymentResponse> processMobileNfcTokenPayment(String payload, String plateNumber) {
-        String rawToken = normalizeMobileNfcPayload(payload);
-        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                .orElseThrow(() -> new RuntimeException("Invalid mobile NFC fare token."));
+        try {
+            String rawToken = normalizeMobileNfcPayload(payload);
+            FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
+                    .orElseThrow(() -> new RuntimeException("Invalid mobile NFC fare token."));
 
-        if (token.getStatus() == FareQrTokenStatus.USED) {
-            throw new RuntimeException("Mobile NFC token has already been used.");
-        }
+            if (token.getStatus() == FareQrTokenStatus.USED) {
+                throw new RuntimeException("Mobile NFC token has already been used.");
+            }
 
-        if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
-            throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
-        }
+            if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
+                throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
+            }
 
-        if (token.getExpiresAt().isBefore(nowUtc())) {
-            token.setStatus(FareQrTokenStatus.EXPIRED);
+            if (token.getExpiresAt().isBefore(nowUtc())) {
+                token.setStatus(FareQrTokenStatus.EXPIRED);
+                fareQrTokenRepository.save(token);
+                throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
+            }
+
+            ApiResponse<FarePaymentResponse> response = processPassengerFare(
+                    token.getPassenger().getId(),
+                    null,
+                    "NFC",
+                    plateNumber,
+                    true);
+
+            token.setStatus(FareQrTokenStatus.USED);
+            token.setUsedAt(LocalDateTime.now());
+            token.setUsedReferenceNumber(response.getData().getReferenceNumber());
             fareQrTokenRepository.save(token);
-            throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
+
+            return response;
+        } catch (RuntimeException ex) {
+            recordPaymentFailure(PaymentMethod.NFC, null, null, plateNumber, null, null, ex);
+            throw ex;
         }
-
-        ApiResponse<FarePaymentResponse> response = processPassengerFare(
-                token.getPassenger().getId(),
-                null,
-                "NFC",
-                plateNumber,
-                true);
-
-        token.setStatus(FareQrTokenStatus.USED);
-        token.setUsedAt(LocalDateTime.now());
-        token.setUsedReferenceNumber(response.getData().getReferenceNumber());
-        fareQrTokenRepository.save(token);
-
-        return response;
     }
 
     @Transactional
     public ApiResponse<FarePaymentResponse> processMobileNfcTokenPayment(DeviceFareRequest request,
                                                                          DevicePrincipal device) {
-        requireDeviceRequest(request);
-        String key = idempotencyKey(request);
-        return transactionRepository.findByIdempotencyKey(key)
-                .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "NFC")))
-                .orElseGet(() -> {
-                    validateDevicePaymentRequest(request, device);
-                    String rawToken = normalizeMobileNfcPayload(
-                            request.getMobileNfcToken() != null && !request.getMobileNfcToken().isBlank()
-                                    ? request.getMobileNfcToken()
-                                    : request.getPayload());
-                    FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                            .orElseThrow(() -> new RuntimeException("Invalid mobile NFC fare token."));
+        try {
+            requireDeviceRequest(request);
+            String key = idempotencyKey(request);
+            return transactionRepository.findByIdempotencyKey(key)
+                    .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "NFC")))
+                    .orElseGet(() -> {
+                        validateDevicePaymentRequest(request, device);
+                        String rawToken = normalizeMobileNfcPayload(
+                                request.getMobileNfcToken() != null && !request.getMobileNfcToken().isBlank()
+                                        ? request.getMobileNfcToken()
+                                        : request.getPayload());
+                        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
+                                .orElseThrow(() -> new RuntimeException("Invalid mobile NFC fare token."));
 
-                    if (token.getStatus() == FareQrTokenStatus.USED) {
-                        throw new RuntimeException("Mobile NFC token has already been used.");
-                    }
-                    if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc())) {
-                        token.setStatus(FareQrTokenStatus.EXPIRED);
+                        if (token.getStatus() == FareQrTokenStatus.USED) {
+                            throw new RuntimeException("Mobile NFC token has already been used.");
+                        }
+                        if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc())) {
+                            token.setStatus(FareQrTokenStatus.EXPIRED);
+                            fareQrTokenRepository.save(token);
+                            throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
+                        }
+
+                        ApiResponse<FarePaymentResponse> response = processPassengerFare(
+                                token.getPassenger().getId(),
+                                null,
+                                "NFC",
+                                request.getPlateNumber(),
+                                true,
+                                key,
+                                device,
+                                request);
+
+                        token.setStatus(FareQrTokenStatus.USED);
+                        token.setUsedAt(LocalDateTime.now());
+                        token.setUsedReferenceNumber(response.getData().getReferenceNumber());
                         fareQrTokenRepository.save(token);
-                        throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
-                    }
-
-                    ApiResponse<FarePaymentResponse> response = processPassengerFare(
-                            token.getPassenger().getId(),
-                            null,
-                            "NFC",
-                            request.getPlateNumber(),
-                            true,
-                            key,
-                            device,
-                            request);
-
-                    token.setStatus(FareQrTokenStatus.USED);
-                    token.setUsedAt(LocalDateTime.now());
-                    token.setUsedReferenceNumber(response.getData().getReferenceNumber());
-                    fareQrTokenRepository.save(token);
-                    return response;
-                });
+                        return response;
+                    });
+        } catch (RuntimeException ex) {
+            recordPaymentFailure(PaymentMethod.NFC, null, null, request != null ? request.getPlateNumber() : null,
+                    device != null ? device.deviceId() : null, request, ex);
+            throw ex;
+        }
     }
 
     @Transactional
     public ApiResponse<FarePaymentResponse> processPassengerNfcPayment(Passenger principal, String plateNumber) {
-        return processPassengerFare(principal.getId(), null, "NFC", plateNumber, true);
+        try {
+            return processPassengerFare(principal.getId(), null, "NFC", plateNumber, true);
+        } catch (RuntimeException ex) {
+            recordPaymentFailure(PaymentMethod.NFC, principal != null ? principal.getId() : null, null, plateNumber, null, null, ex);
+            throw ex;
+        }
     }
 
     @Transactional
     public ApiResponse<FarePaymentResponse> processRfidPayment(String rfidUid, String plateNumber) {
-        if (rfidUid == null || rfidUid.trim().isEmpty()) {
-            throw new RuntimeException("RFID UID is required.");
+        try {
+            if (rfidUid == null || rfidUid.trim().isEmpty()) {
+                throw new RuntimeException("RFID UID is required.");
+            }
+
+            String normalizedUid = rfidUid.trim().toUpperCase();
+            Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
+                    .orElseThrow(() -> new RuntimeException("Card not recognized. Please register your card."));
+
+            return processPassengerFare(passenger.getId(), normalizedUid, "RFID", plateNumber, true);
+        } catch (RuntimeException ex) {
+            recordPaymentFailure(PaymentMethod.RFID, null, rfidUid, plateNumber, null, null, ex);
+            throw ex;
         }
-
-        String normalizedUid = rfidUid.trim().toUpperCase();
-        Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
-                .orElseThrow(() -> new RuntimeException("Card not recognized. Please register your card."));
-
-        return processPassengerFare(passenger.getId(), normalizedUid, "RFID", plateNumber, true);
     }
 
     @Transactional
     public ApiResponse<FarePaymentResponse> processRfidPayment(DeviceFareRequest request,
                                                                DevicePrincipal device) {
-        requireDeviceRequest(request);
-        if (request.getRfidUid() == null || request.getRfidUid().trim().isEmpty()) {
-            throw new RuntimeException("RFID UID is required.");
+        try {
+            requireDeviceRequest(request);
+            if (request.getRfidUid() == null || request.getRfidUid().trim().isEmpty()) {
+                throw new RuntimeException("RFID UID is required.");
+            }
+            String key = idempotencyKey(request);
+            return transactionRepository.findByIdempotencyKey(key)
+                    .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "RFID")))
+                    .orElseGet(() -> {
+                        validateDevicePaymentRequest(request, device);
+                        String normalizedUid = request.getRfidUid().trim().toUpperCase();
+                        Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
+                                .orElseThrow(() -> new RuntimeException("Card not recognized. Please register your card."));
+                        return processPassengerFare(passenger.getId(), normalizedUid, "RFID",
+                                request.getPlateNumber(), true, key, device, request);
+                    });
+        } catch (RuntimeException ex) {
+            recordPaymentFailure(PaymentMethod.RFID, null, request != null ? request.getRfidUid() : null,
+                    request != null ? request.getPlateNumber() : null, device != null ? device.deviceId() : null, request, ex);
+            throw ex;
         }
-        String key = idempotencyKey(request);
-        return transactionRepository.findByIdempotencyKey(key)
-                .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "RFID")))
-                .orElseGet(() -> {
-                    validateDevicePaymentRequest(request, device);
-                    String normalizedUid = request.getRfidUid().trim().toUpperCase();
-                    Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
-                            .orElseThrow(() -> new RuntimeException("Card not recognized. Please register your card."));
-                    return processPassengerFare(passenger.getId(), normalizedUid, "RFID",
-                            request.getPlateNumber(), true, key, device, request);
-                });
     }
 
     private ApiResponse<FarePaymentResponse> processPassengerFare(
@@ -405,6 +445,7 @@ public class FarePaymentService {
         passengerRepository.save(passenger);
 
         String normalizedPlate = normalizePlate(plateNumber);
+        DriverShift activeShift = activeShiftForPlate(normalizedPlate);
         String refNumber = source + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
@@ -418,13 +459,20 @@ public class FarePaymentService {
                 .referenceNumber(refNumber)
                 .idempotencyKey(idempotencyKey)
                 .deviceId(device != null ? device.deviceId() : null)
+                .paymentMethod(paymentMethod(source))
+                .vehicle(activeShift != null ? activeShift.getVehicle() : null)
+                .driverShift(activeShift)
+                .routeSnapshot(activeShift != null && activeShift.getVehicle() != null
+                        ? activeShift.getVehicle().getRoute()
+                        : null)
                 .requestNonce(request != null ? clean(request.getRequestNonce()) : null)
                 .requestTimestamp(request != null ? parseRequestTimestamp(request.getRequestTimestamp()) : null)
                 .description(source + " Fare Payment" + (normalizedPlate != null ? " | " + normalizedPlate : ""))
                 .build();
         transactionRepository.save(tx);
+        farePaymentAttemptService.recordSuccess(tx, paymentMethod(source), rfidUid, normalizedPlate, request);
 
-        recordOnboardIfPossible(passenger, normalizedPlate);
+        recordOnboardIfPossible(passenger, activeShift, normalizedPlate);
 
         if (passenger.getFcmToken() != null) {
             firebaseService.sendFareDeduction(
@@ -460,30 +508,59 @@ public class FarePaymentService {
         return ApiResponse.success("Fare deducted successfully!", data);
     }
 
-    private void recordOnboardIfPossible(Passenger passenger, String plateNumber) {
-        if (plateNumber == null) {
+    private void recordOnboardIfPossible(Passenger passenger, DriverShift shift, String plateNumber) {
+        if (plateNumber == null || shift == null) {
             return;
         }
 
-        driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
-                .ifPresent(shift -> {
-                    long onboard = onboardRepository.countByShiftIdAndStatus(shift.getId(), OnboardStatus.ONBOARD);
+        long onboard = onboardRepository.countByShiftIdAndStatus(shift.getId(), OnboardStatus.ONBOARD);
 
-                    if (onboard >= shift.getVehicle().getTotalCapacity()) {
-                        log.warn("Vehicle {} is at full capacity. Fare was deducted but onboard record was skipped.", plateNumber);
-                        return;
-                    }
+        if (onboard >= shift.getVehicle().getTotalCapacity()) {
+            log.warn("Vehicle {} is at full capacity. Fare was deducted but onboard record was skipped.", plateNumber);
+            return;
+        }
 
-                    PassengerOnboard record = PassengerOnboard.builder()
-                            .shift(shift)
-                            .passenger(passenger)
-                            .dropOffLocation(determineDropOffLocation(shift))
-                            .fare(fareFor(passenger))
-                            .passengerCount(1)
-                            .status(OnboardStatus.ONBOARD)
-                            .build();
-                    onboardRepository.save(record);
-                });
+        PassengerOnboard record = PassengerOnboard.builder()
+                .shift(shift)
+                .passenger(passenger)
+                .dropOffLocation(determineDropOffLocation(shift))
+                .fare(fareFor(passenger))
+                .passengerCount(1)
+                .status(OnboardStatus.ONBOARD)
+                .build();
+        onboardRepository.save(record);
+    }
+
+    private DriverShift activeShiftForPlate(String plateNumber) {
+        if (plateNumber == null) {
+            return null;
+        }
+        return driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
+                .orElse(null);
+    }
+
+    private PaymentMethod paymentMethod(String source) {
+        if (source == null) return PaymentMethod.RFID;
+        return switch (source.trim().toUpperCase()) {
+            case "QR" -> PaymentMethod.QR;
+            case "NFC" -> PaymentMethod.NFC;
+            default -> PaymentMethod.RFID;
+        };
+    }
+
+    private void recordPaymentFailure(PaymentMethod method, Long passengerId, String rfidUid,
+                                      String plateNumber, String deviceId, DeviceFareRequest request,
+                                      RuntimeException ex) {
+        farePaymentAttemptService.recordFailure(
+                method,
+                passengerId,
+                rfidUid,
+                plateNumber,
+                deviceId,
+                request,
+                null,
+                farePaymentAttemptService.classifyFailure(ex.getMessage()),
+                ex.getMessage());
     }
 
     private void validateDevicePaymentRequest(DeviceFareRequest request, DevicePrincipal device) {
