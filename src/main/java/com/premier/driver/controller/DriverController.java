@@ -51,14 +51,6 @@ public class DriverController {
                         shiftId, rfidUid, dropOff, null, count));
     }
 
-    // CONFIRM DROP-OFF 
-    @PostMapping("/drop-off/{onboardId}")
-    public ResponseEntity<?> dropOff(
-            @PathVariable Long onboardId) {
-        return ResponseEntity.ok(
-                driverService.dropOff(onboardId));
-    }
-
     // END SHIFT
     @PostMapping("/end-shift/{plateNumber}")
     public ResponseEntity<?> endShift(

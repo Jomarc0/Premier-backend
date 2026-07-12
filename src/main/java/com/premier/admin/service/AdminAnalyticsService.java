@@ -5,13 +5,11 @@ import com.premier.device.model.DeviceStatus;
 import com.premier.device.repository.DeviceRepository;
 import com.premier.driver.model.DriverLocation;
 import com.premier.driver.model.DriverShift;
-import com.premier.driver.model.PassengerOnboard;
 import com.premier.driver.model.ShiftStatus;
 import com.premier.driver.model.Vehicle;
 import com.premier.driver.model.VehicleStatus;
 import com.premier.driver.repository.DriverLocationRepository;
 import com.premier.driver.repository.DriverShiftRepository;
-import com.premier.driver.repository.PassengerOnboardRepository;
 import com.premier.driver.repository.VehicleRepository;
 import com.premier.model.TopUpRequest;
 import com.premier.model.Transaction;
@@ -62,7 +60,6 @@ public class AdminAnalyticsService {
     private final TopUpRequestRepository topUpRequestRepository;
     private final VehicleRepository vehicleRepository;
     private final DriverShiftRepository driverShiftRepository;
-    private final PassengerOnboardRepository passengerOnboardRepository;
     private final DriverLocationRepository driverLocationRepository;
     private final DeviceRepository deviceRepository;
     private final SupportTicketRepository supportTicketRepository;
@@ -97,10 +94,7 @@ public class AdminAnalyticsService {
                 .filter(attempt -> paymentAttemptVehicleMatches(attempt, normalizedBus, normalizedRoute))
                 .toList();
 
-        List<PassengerOnboard> onboardRecords = passengerOnboardRepository.findAll().stream()
-                .filter(o -> inWindow(o.getBoardedAt(), window))
-                .filter(o -> vehicleMatches(o.getShift() == null ? null : o.getShift().getVehicle(), normalizedBus, normalizedRoute))
-                .toList();
+
         List<DriverShift> shifts = driverShiftRepository.findAll().stream()
                 .filter(s -> inWindow(s.getShiftStart(), window))
                 .filter(s -> vehicleMatches(s.getVehicle(), normalizedBus, normalizedRoute))
@@ -114,7 +108,7 @@ public class AdminAnalyticsService {
         response.put("filters", filters(window, range, normalizedBus, normalizedRoute, normalizedPaymentMethod, zone));
         response.put("options", options(vehicles));
         response.put("summary", summary(successfulFare, fareAttempts, paymentAttempts, shifts, vehicles, locations, devices, topUps, tickets, window));
-        response.put("charts", charts(successfulFare, fareAttempts, onboardRecords, shifts, vehicles, zone, window));
+        response.put("charts", charts(successfulFare, fareAttempts, shifts, vehicles, zone, window));
         response.put("recent", recent(successfulFare, tickets, devices, locations, zone));
         response.put("forecast", forecast(successfulFare));
         response.put("definitions", definitions());
@@ -166,7 +160,7 @@ public class AdminAnalyticsService {
     }
 
     private Map<String, Object> charts(List<Transaction> successfulFare, List<Transaction> fareAttempts,
-                                       List<PassengerOnboard> onboardRecords, List<DriverShift> shifts,
+                                       List<DriverShift> shifts,
                                        List<Vehicle> vehicles, ZoneId zone, DateWindow window) {
         return mapOf(
                 "revenueTrend", revenueTrend(successfulFare, window),

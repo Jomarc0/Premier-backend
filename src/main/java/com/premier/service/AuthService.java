@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -28,6 +30,10 @@ public class AuthService {
     private final Map<String, LocalDateTime> loginCooldowns = new ConcurrentHashMap<>();
     private static final int MAX_LOGIN_ATTEMPTS = 5;
     private static final int LOGIN_COOLDOWN_MINUTES = 15;
+    private final Map<Long, Integer> totpFailures = new ConcurrentHashMap<>();
+    private final Map<Long, Instant> totpCooldowns = new ConcurrentHashMap<>();
+    private static final int MAX_TOTP_ATTEMPTS = 3;
+    private static final int MAX_TOTP_COOLDOWN_MINUTES = 15;
 
     //REGISTER 
     @Transactional
@@ -162,6 +168,8 @@ public class AuthService {
         Long passengerId = jwtUtil.extractPassengerId(
             request.getTempToken());
 
+        enforceTotpCooldown(passengerId);
+
         Passenger passenger = passengerRepository
             .findById(passengerId)
             .orElseThrow(() ->
@@ -173,9 +181,13 @@ public class AuthService {
             passenger.getTwofaSecret(),
             request.getTotpCode());
 
-        if (!isValid)
+        if (!isValid) {
+            recordFailedTotp(passengerId);
             throw new InvalidTotpException(
                 "Invalid code. Please try again.");
+        }
+
+        clearTotpFailures(passengerId);
 
         if (!passenger.getIs2FaEnabled()) {
             passenger.setIs2FaEnabled(true);
@@ -249,5 +261,49 @@ public class AuthService {
     private void clearLoginFailures(String cardNumber) {
         loginAttempts.remove(cardNumber);
         loginCooldowns.remove(cardNumber);
+    }
+
+    private void enforceTotpCooldown(Long passengerId) {
+        Instant lockedUntil = totpCooldowns.get(passengerId);
+        if (lockedUntil == null) return;
+
+        Instant now = Instant.now();
+        if (lockedUntil.isAfter(now)) {
+            long retryAfterSeconds = Math.max(
+                1,
+                (Duration.between(now, lockedUntil).toMillis() + 999) / 1000);
+            throw new InvalidTotpException(
+                "Too many incorrect codes. Try again in " + retryAfterSeconds + " seconds.",
+                retryAfterSeconds);
+        }
+
+        totpCooldowns.remove(passengerId);
+    }
+
+    private void recordFailedTotp(Long passengerId) {
+        int failures = totpFailures.merge(passengerId, 1, Integer::sum);
+        if (failures < MAX_TOTP_ATTEMPTS) return;
+
+        int cooldownMinutes = Math.min(
+            failures - MAX_TOTP_ATTEMPTS + 1,
+            MAX_TOTP_COOLDOWN_MINUTES);
+        Instant lockedUntil = Instant.now().plusSeconds(cooldownMinutes * 60L);
+        totpCooldowns.put(passengerId, lockedUntil);
+
+        log.warn(
+            "Passenger TOTP temporarily locked: passengerId={}, failures={}, cooldownMinutes={}",
+            passengerId,
+            failures,
+            cooldownMinutes);
+
+        throw new InvalidTotpException(
+            "Too many incorrect codes. Try again in " + cooldownMinutes +
+                (cooldownMinutes == 1 ? " minute." : " minutes."),
+            cooldownMinutes * 60L);
+    }
+
+    private void clearTotpFailures(Long passengerId) {
+        totpFailures.remove(passengerId);
+        totpCooldowns.remove(passengerId);
     }
 }

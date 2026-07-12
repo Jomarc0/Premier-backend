@@ -119,7 +119,6 @@ public class SecurityConfig {
                 .requestMatchers(
                     "/api/driver/shift/**",
                     "/api/driver/tap-in",
-                    "/api/driver/drop-off/**",
                     "/api/driver/end-shift/**"
                 ).hasAuthority("ROLE_DRIVER")
 

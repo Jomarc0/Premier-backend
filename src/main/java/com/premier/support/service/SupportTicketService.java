@@ -174,7 +174,7 @@ public class SupportTicketService {
         appendNotes(ticket, notes);
         ticketRepository.save(ticket);
         logAdminAction(admin, ticket, "RESOLVE_SUPPORT_TICKET", "Resolved support ticket " + ticket.getTicketNumber());
-        supportEmailService.sendTicketDecision(ticket,
+        sendTicketDecisionSafely(ticket,
                 "Premier Transport support ticket resolved",
                 "Your support ticket has been resolved by the Premier Transport support team. "
                         + publicAdminMessage(ticket.getAdminNotes()));
@@ -193,11 +193,20 @@ public class SupportTicketService {
         appendNotes(ticket, notes);
         ticketRepository.save(ticket);
         logAdminAction(admin, ticket, "REJECT_SUPPORT_TICKET", "Rejected support ticket " + ticket.getTicketNumber());
-        supportEmailService.sendTicketDecision(ticket,
+        sendTicketDecisionSafely(ticket,
                 "Premier Transport support ticket update",
                 "Your support ticket was reviewed by the Premier Transport support team but was not approved. "
                         + publicAdminMessage(ticket.getAdminNotes()));
         return ApiResponse.success("Support ticket rejected.", SupportTicketResponse.from(ticket));
+    }
+
+    private void sendTicketDecisionSafely(SupportTicket ticket, String subject, String message) {
+        try {
+            supportEmailService.sendTicketDecision(ticket, subject, message);
+        } catch (RuntimeException ex) {
+            log.warn("Ticket {} decision saved, but the notification email could not be sent: {}",
+                    ticket.getTicketNumber(), ex.getMessage());
+        }
     }
 
     private SupportTicket findTicket(Long id) {

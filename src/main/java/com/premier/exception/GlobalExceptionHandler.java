@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.*;
 import com.premier.response.ApiResponse;
 
 import java.util.stream.Collectors;
+import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -27,6 +28,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(InvalidTotpException.class)
     public ResponseEntity<?> handleInvalidTotp(InvalidTotpException ex) {
+        if (ex.getRetryAfterSeconds() != null) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(ApiResponse.error(
+                            ex.getMessage(),
+                            Map.of("retryAfterSeconds", ex.getRetryAfterSeconds())));
+        }
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .body(ApiResponse.error(ex.getMessage()));
     }

@@ -44,7 +44,6 @@ public class DriverService {
     private final VehicleRepository            vehicleRepository;
     private final DriverAssignmentRepository   assignmentRepository;
     private final DriverShiftRepository        shiftRepository;
-    private final PassengerOnboardRepository   onboardRepository;
     private final PassengerRepository          passengerRepository;
     private final TransactionRepository        transactionRepository;
     private final DriverJwtUtil                driverJwtUtil;
@@ -135,36 +134,13 @@ public class DriverService {
         Vehicle vehicle = shift.getVehicle();
         Driver  driver  = shift.getDriver();
 
-        List<PassengerOnboard> onboardList = onboardRepository
-                .findByShiftIdAndStatus(
-                        shift.getId(), OnboardStatus.ONBOARD);
-
-        long onboardCount  = onboardList.size();
-        long availableSeats = vehicle.getTotalCapacity() - onboardCount;
-
-        List<Map<String, Object>> passengers = new ArrayList<>();
-        for (PassengerOnboard p : onboardList) {
-            Map<String, Object> pMap = new HashMap<>();
-            pMap.put("onboardId",      p.getId());
-            pMap.put("userId",         p.getPassenger().getId());
-            pMap.put("dropOff",        p.getDropOffLocation());
-            pMap.put("fare",           p.getFare());
-            pMap.put("passengerCount", p.getPassengerCount());
-            pMap.put("status",         p.getStatus());
-            pMap.put("boardedAt",      p.getBoardedAt());
-            passengers.add(pMap);
-        }
-
         Map<String, Object> data = new HashMap<>();
         data.put("shiftId",           shift.getId());
         data.put("driverName",        driver.getFullName());
         data.put("plateNumber",       vehicle.getPlateNumber());
         data.put("route",             vehicle.getRoute());
         data.put("totalCapacity",     vehicle.getTotalCapacity());
-        data.put("passengersOnboard", onboardCount);
-        data.put("availableSeats",    availableSeats);
         data.put("vehicleStatus",     vehicle.getStatus());
-        data.put("onboardPassengers", passengers);
 
         return ApiResponse.success("Shift info fetched.", data);
     }
@@ -215,14 +191,6 @@ public class DriverService {
                 "Insufficient balance. Current: ₱"
                 + passenger.getBalance());
 
-        long onboardCount = onboardRepository
-                .countByShiftIdAndStatus(shiftId, OnboardStatus.ONBOARD);
-
-        if (onboardCount >= shift.getVehicle().getTotalCapacity())
-            recordTapInFailure(passenger.getId(), rfidUid, shift, "Vehicle is at full capacity!");
-        if (onboardCount >= shift.getVehicle().getTotalCapacity())
-            throw new RuntimeException("Vehicle is at full capacity!");
-
         // Deduct fare
         BigDecimal balanceBefore = passenger.getBalance();
         BigDecimal balanceAfter  = balanceBefore.subtract(fare);
@@ -251,28 +219,16 @@ public class DriverService {
         farePaymentAttemptService.recordSuccess(tx, PaymentMethod.RFID, rfidUid,
             shift.getVehicle() != null ? shift.getVehicle().getPlateNumber() : null, null);
 
-        // Record boarding
-        PassengerOnboard onboard = PassengerOnboard.builder()
-                .shift(shift)
-                .passenger(passenger)
-                .dropOffLocation(dropOffLocation)
-                .fare(fare)
-                .passengerCount(passengerCount)
-                .status(OnboardStatus.ONBOARD)
-                .build();
-        onboardRepository.save(onboard);
-
         log.info("Passenger {} tapped in. Drop-off: {}",
                 passenger.getId(), dropOffLocation);
 
         Map<String, Object> result = new HashMap<>();
-        result.put("onboardId",     onboard.getId());
         result.put("userId",        passenger.getId());
         result.put("dropOff",       dropOffLocation);
         result.put("fare",          fare);
         result.put("balanceBefore", balanceBefore);
         result.put("balanceAfter",  balanceAfter);
-        result.put("status",        "ONBOARD");
+        result.put("status",        "PAID");
 
         return ApiResponse.success(
                 "Tap-in successful! Fare deducted.", result);
@@ -300,42 +256,6 @@ public class DriverService {
                 message);
     }
 
-    //  DROP-OFF 
-
-    @Transactional
-    public ApiResponse<Map<String, Object>> dropOff(Long onboardId) {
-
-        PassengerOnboard onboard = onboardRepository
-                .findById(onboardId)
-                .orElseThrow(() -> new RuntimeException(
-                        "Onboard record not found."));
-
-        if (onboard.getStatus() != OnboardStatus.ONBOARD)
-            throw new RuntimeException(
-                "Passenger is not currently onboard.");
-
-        onboard.setStatus(OnboardStatus.DROPPED_OFF);
-        onboard.setDroppedOffAt(LocalDateTime.now());
-        onboardRepository.save(onboard);
-
-        DriverShift shift = onboard.getShift();
-        shift.setPassengersServed(
-                shift.getPassengersServed() + 1);
-        shiftRepository.save(shift);
-
-        log.info("Passenger {} dropped off at {}",
-                onboard.getPassenger().getId(),
-                onboard.getDropOffLocation());
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("onboardId", onboardId);
-        result.put("userId",    onboard.getPassenger().getId());
-        result.put("dropOff",   onboard.getDropOffLocation());
-        result.put("status",    "DROPPED_OFF");
-
-        return ApiResponse.success("Drop-off confirmed.", result);
-    }
-
     //  END SHIFT 
 
     @Transactional
@@ -347,15 +267,6 @@ public class DriverService {
                         plateNumber.toUpperCase(), ShiftStatus.ACTIVE)
                 .orElseThrow(() -> new RuntimeException(
                         "No active shift found."));
-
-        long stillOnboard = onboardRepository
-                .countByShiftIdAndStatus(
-                        shift.getId(), OnboardStatus.ONBOARD);
-
-        if (stillOnboard > 0)
-            throw new RuntimeException(
-                "Cannot end shift. " + stillOnboard
-                + " passenger(s) still onboard!");
 
         shift.setStatus(ShiftStatus.COMPLETED);
         shift.setShiftEnd(LocalDateTime.now());
@@ -443,15 +354,12 @@ public class DriverService {
                     ShiftStatus.ACTIVE);
 
             String driverName = "No Driver";
-            int onboard = 0;
             Long shiftId = null;
 
             if (shiftOpt.isPresent()) {
                 var shift = shiftOpt.get();
                 driverName = shift.getDriver().getFullName();
                 shiftId = shift.getId();
-                onboard = (int) onboardRepository
-                    .countByShiftIdAndStatus(shiftId, OnboardStatus.ONBOARD);
             }
 
             //Get latest location for this vehicle
@@ -483,9 +391,7 @@ public class DriverService {
             bus.put("status", displayStatus);
             bus.put("online", hasFreshLocation);
             bus.put("locationFresh", hasFreshLocation);
-            bus.put("passengersOnboard", onboard);
             bus.put("totalCapacity", vehicle.getTotalCapacity());
-            bus.put("availableSeats", vehicle.getTotalCapacity() - onboard);
             bus.put("lastUpdated", latestLoc != null ? latestLoc.getRecordedAt() : null);
             bus.put("speed", hasFreshLocation ? latestLoc.getSpeed() : 0.0);
             

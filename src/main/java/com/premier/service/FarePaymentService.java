@@ -1,11 +1,8 @@
 package com.premier.service;
 
 import com.premier.driver.model.DriverShift;
-import com.premier.driver.model.OnboardStatus;
-import com.premier.driver.model.PassengerOnboard;
 import com.premier.driver.model.ShiftStatus;
 import com.premier.driver.repository.DriverShiftRepository;
-import com.premier.driver.repository.PassengerOnboardRepository;
 import com.premier.device.security.DevicePrincipal;
 import com.premier.device.service.DeviceService;
 import com.premier.model.*;
@@ -18,6 +15,7 @@ import com.premier.response.ApiResponse;
 import com.premier.response.FarePaymentResponse;
 import com.premier.response.FareQrTokenResponse;
 import com.premier.response.FareQrStatusResponse;
+import com.premier.staffcash.service.StaffCashFareService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -56,10 +54,10 @@ public class FarePaymentService {
     private final TransactionRepository transactionRepository;
     private final FareQrTokenRepository fareQrTokenRepository;
     private final DriverShiftRepository driverShiftRepository;
-    private final PassengerOnboardRepository onboardRepository;
     private final FirebaseService firebaseService;
     private final DeviceService deviceService;
     private final FarePaymentAttemptService farePaymentAttemptService;
+    private final StaffCashFareService staffCashFareService;
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, LocalDateTime> cooldownMap = new ConcurrentHashMap<>();
@@ -379,6 +377,9 @@ public class FarePaymentService {
             if (request.getRfidUid() == null || request.getRfidUid().trim().isEmpty()) {
                 throw new RuntimeException("RFID UID is required.");
             }
+            if (staffCashFareService.isStaffCashCard(request.getRfidUid())) {
+                return staffCashFareService.process(request, device);
+            }
             String key = idempotencyKey(request);
             return transactionRepository.findByIdempotencyKey(key)
                     .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "RFID")))
@@ -472,8 +473,6 @@ public class FarePaymentService {
         transactionRepository.save(tx);
         farePaymentAttemptService.recordSuccess(tx, paymentMethod(source), rfidUid, normalizedPlate, request);
 
-        recordOnboardIfPossible(passenger, activeShift, normalizedPlate);
-
         if (passenger.getFcmToken() != null) {
             firebaseService.sendFareDeduction(
                     passenger.getFcmToken(),
@@ -506,29 +505,6 @@ public class FarePaymentService {
                 source, passenger.getId(), refNumber, balanceBefore, balanceAfter);
 
         return ApiResponse.success("Fare deducted successfully!", data);
-    }
-
-    private void recordOnboardIfPossible(Passenger passenger, DriverShift shift, String plateNumber) {
-        if (plateNumber == null || shift == null) {
-            return;
-        }
-
-        long onboard = onboardRepository.countByShiftIdAndStatus(shift.getId(), OnboardStatus.ONBOARD);
-
-        if (onboard >= shift.getVehicle().getTotalCapacity()) {
-            log.warn("Vehicle {} is at full capacity. Fare was deducted but onboard record was skipped.", plateNumber);
-            return;
-        }
-
-        PassengerOnboard record = PassengerOnboard.builder()
-                .shift(shift)
-                .passenger(passenger)
-                .dropOffLocation(determineDropOffLocation(shift))
-                .fare(fareFor(passenger))
-                .passengerCount(1)
-                .status(OnboardStatus.ONBOARD)
-                .build();
-        onboardRepository.save(record);
     }
 
     private DriverShift activeShiftForPlate(String plateNumber) {
