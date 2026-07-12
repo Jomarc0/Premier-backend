@@ -212,7 +212,7 @@ public class FarePaymentService {
         try {
             requireDeviceRequest(request);
             String key = idempotencyKey(request);
-            return transactionRepository.findByIdempotencyKey(key)
+            return findExistingTransaction(request, key)
                     .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "QR")))
                     .orElseGet(() -> {
                         validateDevicePaymentRequest(request, device);
@@ -223,7 +223,8 @@ public class FarePaymentService {
                         if (token.getStatus() == FareQrTokenStatus.USED) {
                             throw new RuntimeException("QR fare token has already been used.");
                         }
-                        if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc())) {
+                        if ((token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc()))
+                                && !offlineQrWasCapturedWhileValid(request, token)) {
                             token.setStatus(FareQrTokenStatus.EXPIRED);
                             fareQrTokenRepository.save(token);
                             throw new RuntimeException("QR fare token expired. Please generate a new one.");
@@ -298,7 +299,7 @@ public class FarePaymentService {
         try {
             requireDeviceRequest(request);
             String key = idempotencyKey(request);
-            return transactionRepository.findByIdempotencyKey(key)
+            return findExistingTransaction(request, key)
                     .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "NFC")))
                     .orElseGet(() -> {
                         validateDevicePaymentRequest(request, device);
@@ -381,7 +382,7 @@ public class FarePaymentService {
                 return staffCashFareService.process(request, device);
             }
             String key = idempotencyKey(request);
-            return transactionRepository.findByIdempotencyKey(key)
+            return findExistingTransaction(request, key)
                     .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "RFID")))
                     .orElseGet(() -> {
                         validateDevicePaymentRequest(request, device);
@@ -459,6 +460,8 @@ public class FarePaymentService {
                 .balanceAfter(balanceAfter)
                 .referenceNumber(refNumber)
                 .idempotencyKey(idempotencyKey)
+                .offlineTransactionId(request != null ? clean(request.getOfflineTransactionId()) : null)
+                .offlineCapturedAt(request != null ? parseOptionalRequestTimestamp(request.getOfflineCapturedAt()) : null)
                 .deviceId(device != null ? device.deviceId() : null)
                 .paymentMethod(paymentMethod(source))
                 .vehicle(activeShift != null ? activeShift.getVehicle() : null)
@@ -561,6 +564,29 @@ public class FarePaymentService {
             throw new RuntimeException("Request ID is required.");
         }
         return key;
+    }
+
+    private java.util.Optional<Transaction> findExistingTransaction(DeviceFareRequest request, String key) {
+        String offlineId = request == null ? null : clean(request.getOfflineTransactionId());
+        if (offlineId != null) {
+            java.util.Optional<Transaction> existing = transactionRepository.findByOfflineTransactionId(offlineId);
+            if (existing.isPresent()) return existing;
+        }
+        return transactionRepository.findByIdempotencyKey(key);
+    }
+
+    private boolean offlineQrWasCapturedWhileValid(DeviceFareRequest request, FareQrToken token) {
+        if (request == null || !Boolean.TRUE.equals(request.getOfflineSync())) return false;
+        LocalDateTime capturedAt = parseOptionalRequestTimestamp(request.getOfflineCapturedAt());
+        return capturedAt != null && !capturedAt.isAfter(token.getExpiresAt());
+    }
+
+    private LocalDateTime parseOptionalRequestTimestamp(String timestamp) {
+        try {
+            return parseRequestTimestamp(timestamp);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private LocalDateTime parseRequestTimestamp(String timestamp) {

@@ -85,7 +85,8 @@ public class AuthService {
                     "Invalid card number or account status.");
             });
 
-        if (passenger.getStatus() != PassengerStatus.ACTIVE) {
+        if (passenger.getStatus() != PassengerStatus.ACTIVE
+                && passenger.getStatus() != PassengerStatus.AVAILABLE) {
             recordFailedLogin(cardNumber);
             throw new RuntimeException(
                 "Account is " +
@@ -176,6 +177,12 @@ public class AuthService {
                 new PassengerNotFoundException(
                     "Passenger not found."));
 
+        if (passenger.getStatus() != PassengerStatus.ACTIVE
+                && passenger.getStatus() != PassengerStatus.AVAILABLE) {
+            throw new RuntimeException(
+                "Account is " + passenger.getStatus().name().toLowerCase());
+        }
+
 
         boolean isValid = totpService.verifyCode(
             passenger.getTwofaSecret(),
@@ -191,9 +198,14 @@ public class AuthService {
 
         if (!passenger.getIs2FaEnabled()) {
             passenger.setIs2FaEnabled(true);
-            passengerRepository.save(passenger);
             log.info("2FA enabled for passenger: {}", passenger.getId());
         }
+
+        if (passenger.getStatus() == PassengerStatus.AVAILABLE) {
+            passenger.setStatus(PassengerStatus.ACTIVE);
+            log.info("Activated newly issued passenger card: {}", passenger.getId());
+        }
+        passengerRepository.save(passenger);
 
         String fullToken = jwtUtil.generateFullToken(
             passenger.getId());

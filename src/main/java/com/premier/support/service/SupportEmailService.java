@@ -27,18 +27,18 @@ public class SupportEmailService {
     @Value("${spring.mail.host:}")
     private String mailHost;
 
-    public void sendTicketDecision(SupportTicket ticket, String subject, String message) {
+    public boolean sendTicketDecision(SupportTicket ticket, String subject, String message) {
         if (mailHost == null || mailHost.isBlank()) {
-            log.info("spring.mail.host is not configured. Ticket {} email to {} skipped: {}",
-                    ticket.getTicketNumber(), ticket.getEmail(), message);
-            return;
+            log.warn("Support email skipped for ticket {} because SPRING_MAIL_HOST is not configured.",
+                    ticket.getTicketNumber());
+            return false;
         }
 
         JavaMailSender mailSender = mailSenderProvider.getIfAvailable();
         if (mailSender == null) {
             log.info("Mail sender is not configured. Ticket {} email to {} skipped: {}",
                     ticket.getTicketNumber(), ticket.getEmail(), message);
-            return;
+            return false;
         }
 
         try {
@@ -49,6 +49,9 @@ public class SupportEmailService {
             helper.setSubject(buildSubject(ticket, subject));
             helper.setText(buildPlainText(ticket, message), buildHtml(ticket, message));
             mailSender.send(mail);
+            log.info("Support decision email sent for ticket {} to {}.",
+                    ticket.getTicketNumber(), ticket.getEmail());
+            return true;
         } catch (MessagingException | UnsupportedEncodingException ex) {
             log.warn("Unable to send formatted support email for ticket {}", ticket.getTicketNumber(), ex);
             throw new RuntimeException("Unable to send support email confirmation.");

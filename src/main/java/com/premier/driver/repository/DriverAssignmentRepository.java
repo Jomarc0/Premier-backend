@@ -15,4 +15,7 @@ public interface DriverAssignmentRepository
 
     Optional<DriverAssignment> findByVehiclePlateNumberAndStatus(
             String plateNumber, AssignmentStatus status);
+
+    Optional<DriverAssignment> findByVehicleIdAndStatus(
+            Long vehicleId, AssignmentStatus status);
 }

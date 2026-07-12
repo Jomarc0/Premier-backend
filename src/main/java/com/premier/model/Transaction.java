@@ -12,7 +12,8 @@ import java.time.LocalDateTime;
 @Table(name = "transactions",
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_transactions_reference_number", columnNames = "reference_number"),
-                @UniqueConstraint(name = "uk_transactions_idempotency_key", columnNames = "idempotency_key")
+                @UniqueConstraint(name = "uk_transactions_idempotency_key", columnNames = "idempotency_key"),
+                @UniqueConstraint(name = "uk_transactions_offline_transaction_id", columnNames = "offline_transaction_id")
         })
 @Data
 @NoArgsConstructor
@@ -52,6 +53,12 @@ public class Transaction {
 
     @Column(name = "idempotency_key", length = 120)
     private String idempotencyKey;
+
+    @Column(name = "offline_transaction_id", length = 120)
+    private String offlineTransactionId;
+
+    @Column(name = "offline_captured_at")
+    private LocalDateTime offlineCapturedAt;
 
     @Column(name = "device_id", length = 80)
     private String deviceId;

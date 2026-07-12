@@ -4,6 +4,7 @@ import com.premier.driver.model.*;
 import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.List;
 import java.util.Optional;
+import java.time.LocalDateTime;
 
 public interface DriverShiftRepository
         extends JpaRepository<DriverShift, Long> {
@@ -13,6 +14,9 @@ public interface DriverShiftRepository
 
     Optional<DriverShift> findByVehiclePlateNumberAndStatus(
             String plateNumber, ShiftStatus status);
+
+    Optional<DriverShift> findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(
+            String plateNumber, LocalDateTime capturedAt);
 
     List<DriverShift> findByDriverIdOrderByCreatedAtDesc(
             Long driverId);

@@ -6,6 +6,7 @@ import com.premier.admin.repository.AdminRepository;
 import com.premier.admin.security.AdminJwtUtil;
 import com.premier.admin.service.AdminAnalyticsService;
 import com.premier.admin.service.AdminService;
+import com.premier.admin.service.FleetAssignmentService;
 import com.premier.driver.model.*;
 import com.premier.driver.repository.DriverRepository;
 import com.premier.driver.repository.VehicleRepository;
@@ -36,6 +37,7 @@ public class AdminController {
     private final VehicleRepository  vehicleRepository;
     private final DriverOperationalStatusService driverOperationalStatusService;
     private final RfidUidCaptureService rfidUidCaptureService;
+    private final FleetAssignmentService fleetAssignmentService;
 
     //  EXCEPTION HANDLER 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -366,6 +368,29 @@ public class AdminController {
         Admin admin = getCurrentAdmin(request);
         return ResponseEntity.ok(
             adminService.deleteVehicle(admin, id));
+    }
+
+    @GetMapping("/fleet-assignments")
+    public ResponseEntity<?> getFleetAssignments(HttpServletRequest request) {
+        getCurrentAdmin(request);
+        return ResponseEntity.ok(fleetAssignmentService.activeAssignments());
+    }
+
+    @PostMapping("/fleet-assignments")
+    public ResponseEntity<?> assignDriverVehicle(HttpServletRequest request,
+                                                  @RequestBody Map<String, Object> body) {
+        Admin admin = getCurrentAdmin(request);
+        if (body.get("driverId") == null || body.get("vehicleId") == null) {
+            return ResponseEntity.badRequest().body(ApiResponse.error("Driver and vehicle are required."));
+        }
+        return ResponseEntity.ok(fleetAssignmentService.assign(admin,
+                Long.valueOf(body.get("driverId").toString()),
+                Long.valueOf(body.get("vehicleId").toString())));
+    }
+
+    @DeleteMapping("/fleet-assignments/{id}")
+    public ResponseEntity<?> unassignDriverVehicle(HttpServletRequest request, @PathVariable Long id) {
+        return ResponseEntity.ok(fleetAssignmentService.unassign(getCurrentAdmin(request), id));
     }
 
     // ADMIN MANAGEMENT 

@@ -13,7 +13,8 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "staff_cash_transactions", uniqueConstraints = {
         @UniqueConstraint(name = "uk_staff_cash_tx_reference", columnNames = "reference_number"),
-        @UniqueConstraint(name = "uk_staff_cash_tx_idempotency", columnNames = "idempotency_key")
+        @UniqueConstraint(name = "uk_staff_cash_tx_idempotency", columnNames = "idempotency_key"),
+        @UniqueConstraint(name = "uk_staff_cash_tx_offline_id", columnNames = "offline_transaction_id")
 }, indexes = {
         @Index(name = "idx_staff_cash_tx_staff_created", columnList = "staff_id,created_at"),
         @Index(name = "idx_staff_cash_tx_vehicle_created", columnList = "vehicle_id,created_at")
@@ -69,6 +70,12 @@ public class StaffCashTransaction {
 
     @Column(name = "idempotency_key", nullable = false, length = 120)
     private String idempotencyKey;
+
+    @Column(name = "offline_transaction_id", length = 120)
+    private String offlineTransactionId;
+
+    @Column(name = "offline_captured_at")
+    private LocalDateTime offlineCapturedAt;
 
     @Column(name = "route_snapshot", length = 160)
     private String routeSnapshot;

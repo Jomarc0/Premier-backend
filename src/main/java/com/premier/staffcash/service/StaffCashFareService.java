@@ -44,13 +44,13 @@ public class StaffCashFareService {
     private BigDecimal discountRate;
 
     public boolean isStaffCashCard(String uid) {
-        return cardRepository.findByRfidUid(normalizeUid(uid)).isPresent();
+        return findCard(uid).isPresent();
     }
 
     @Transactional
     public ApiResponse<FarePaymentResponse> process(DeviceFareRequest request, DevicePrincipal device) {
         String uid = normalizeUid(request != null ? request.getRfidUid() : null);
-        StaffCashCard card = cardRepository.findByRfidUid(uid)
+        StaffCashCard card = findCard(uid)
                 .orElseThrow(() -> new RuntimeException("Staff cash card not found."));
         if (card.getStatus() != StaffCashCardStatus.ACTIVE) {
             throw new RuntimeException("Staff cash card is " + card.getStatus().name().toLowerCase() + ".");
@@ -60,6 +60,13 @@ public class StaffCashFareService {
             throw new RuntimeException("Assigned staff account is inactive.");
         }
         String key = idempotencyKey(request);
+        String offlineId = clean(request.getOfflineTransactionId());
+        if (offlineId != null) {
+            var existing = transactionRepository.findByOfflineTransactionId(offlineId);
+            if (existing.isPresent()) {
+                return ApiResponse.success("Offline cash fare already synchronized.", toDeviceResponse(existing.get()));
+            }
+        }
         return transactionRepository.findByIdempotencyKey(key)
                 .map(tx -> ApiResponse.success("Cash fare already recorded.", toDeviceResponse(tx)))
                 .orElseGet(() -> createTransaction(request, device, card, key));
@@ -71,9 +78,14 @@ public class StaffCashFareService {
         deviceService.requirePlateAssignment(device, request.getPlateNumber());
         deviceService.validateFreshNonce(device, request.getRequestNonce(), request.getRequestTimestamp());
 
-        DriverShift shift = shiftRepository
-                .findByVehiclePlateNumberAndStatus(normalizePlate(request.getPlateNumber()), ShiftStatus.ACTIVE)
-                .orElseThrow(() -> new RuntimeException("Vehicle has no active driver shift."));
+        String plate = normalizePlate(request.getPlateNumber());
+        LocalDateTime offlineCapturedAt = parseTimestamp(request.getOfflineCapturedAt());
+        DriverShift shift = shiftRepository.findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE)
+                .or(() -> offlineCapturedAt == null ? java.util.Optional.empty()
+                        : shiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(
+                                plate, offlineCapturedAt)
+                                .filter(row -> row.getShiftEnd() == null || !offlineCapturedAt.isAfter(row.getShiftEnd())))
+                .orElseThrow(() -> new RuntimeException("Vehicle has no matching driver shift for this fare."));
 
         BigDecimal discount = card.getPurpose() == StaffCashCardPurpose.DISCOUNTED_CASH
                 ? regularFare.multiply(discountRate)
@@ -93,6 +105,8 @@ public class StaffCashFareService {
                 .finalFare(finalFare)
                 .referenceNumber("CASH-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase())
                 .idempotencyKey(key)
+                .offlineTransactionId(clean(request.getOfflineTransactionId()))
+                .offlineCapturedAt(offlineCapturedAt)
                 .routeSnapshot(route)
                 .terminalSnapshot(originTerminal(route))
                 .requestTimestamp(parseTimestamp(request.getRequestTimestamp()))
@@ -111,7 +125,7 @@ public class StaffCashFareService {
         if (passengerRepository.existsByRfidUid(uid)) {
             throw new RuntimeException("This RFID UID is already registered to a passenger.");
         }
-        cardRepository.findByRfidUid(uid).ifPresent(existing -> {
+        findCard(uid).ifPresent(existing -> {
             if (!existing.getStaff().getId().equals(staff.getId()) || existing.getPurpose() != request.getPurpose()) {
                 throw new RuntimeException("This RFID UID is already registered as another staff cash card.");
             }
@@ -197,11 +211,22 @@ public class StaffCashFareService {
 
     private LocalDateTime parseTimestamp(String value) {
         if (value == null || value.isBlank()) return null;
-        return LocalDateTime.ofInstant(Instant.parse(value.trim()), ZoneOffset.UTC);
+        try {
+            return LocalDateTime.ofInstant(Instant.parse(value.trim()), ZoneOffset.UTC);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private String normalizeUid(String value) {
-        return value == null ? "" : value.trim().toUpperCase().replace(":", "").replace(" ", "");
+        return value == null ? "" : value.toUpperCase().replace("UID", "").replaceAll("[^A-F0-9]", "");
+    }
+
+    private java.util.Optional<StaffCashCard> findCard(String uid) {
+        String normalized = normalizeUid(uid);
+        return normalized.isBlank()
+                ? java.util.Optional.empty()
+                : cardRepository.findByNormalizedRfidUid(normalized);
     }
 
     private String normalizePlate(String value) { return value == null ? null : value.trim().toUpperCase(); }

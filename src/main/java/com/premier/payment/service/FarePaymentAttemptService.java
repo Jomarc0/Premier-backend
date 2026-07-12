@@ -32,7 +32,7 @@ public class FarePaymentAttemptService {
     private final VehicleRepository vehicleRepository;
     private final DriverShiftRepository driverShiftRepository;
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public void recordSuccess(Transaction transaction, PaymentMethod paymentMethod, String rfidUid,
                               String plateNumber, DeviceFareRequest request) {
         if (transaction == null) {
