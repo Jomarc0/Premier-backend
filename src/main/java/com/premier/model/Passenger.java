@@ -13,13 +13,16 @@ import java.time.LocalDateTime;
 @Builder
 public class Passenger {
 
+    /** Initial stored value included with every newly issued RFID card. */
+    public static final BigDecimal INITIAL_CARD_BALANCE = new BigDecimal("120.00");
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     @Column(nullable = false, precision = 10, scale = 2)
     @Builder.Default
-    private BigDecimal balance = BigDecimal.ZERO;
+    private BigDecimal balance = INITIAL_CARD_BALANCE;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

@@ -456,7 +456,7 @@ public class AdminService {
         Passenger passenger = Passenger.builder()
                 .cardNumber(cardNumber)
                 .rfidUid(normalizedUid)
-                .balance(BigDecimal.ZERO)
+                .balance(Passenger.INITIAL_CARD_BALANCE)
                 .cardCategory(cardCategory)
                 .discountEligible(cardCategory != PassengerCardCategory.REGULAR)
                 .createdByAdminId(admin != null ? admin.getId() : null)
