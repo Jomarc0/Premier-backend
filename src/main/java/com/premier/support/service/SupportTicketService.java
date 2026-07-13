@@ -97,6 +97,7 @@ public class SupportTicketService {
             throw new RuntimeException("Use the resolve or reject action to close a ticket.");
         }
         SupportTicket ticket = findTicket(id);
+        requireOpenTicket(ticket);
         ticket.setStatus(status);
         ticket.setHandledBy(admin);
         ticketRepository.save(ticket);
@@ -117,6 +118,7 @@ public class SupportTicketService {
     @Transactional
     public ApiResponse<SupportTicketResponse> freezeCard(Admin admin, Long id, String notes) {
         SupportTicket ticket = findTicket(id);
+        requireOpenTicket(ticket);
         Passenger passenger = passengerRepository.findLockedById(ticket.getPassenger().getId())
                 .orElseThrow(() -> new RuntimeException("Passenger not found."));
         passenger.setStatus(PassengerStatus.FROZEN);
@@ -138,6 +140,7 @@ public class SupportTicketService {
     @Transactional
     public ApiResponse<SupportTicketResponse> replaceRfidUid(Admin admin, Long id, String newRfidUid, String notes) {
         SupportTicket ticket = findTicket(id);
+        requireOpenTicket(ticket);
         Passenger passenger = passengerRepository.findLockedById(ticket.getPassenger().getId())
                 .orElseThrow(() -> new RuntimeException("Passenger not found."));
         String normalizedUid = normalizeRfidUid(newRfidUid);
@@ -168,6 +171,7 @@ public class SupportTicketService {
     @Transactional
     public ApiResponse<SupportTicketResponse> resolve(Admin admin, Long id, String notes) {
         SupportTicket ticket = findTicket(id);
+        requireOpenTicket(ticket);
         ticket.setStatus(SupportTicketStatus.RESOLVED);
         ticket.setHandledBy(admin);
         ticket.setResolvedAt(LocalDateTime.now());
@@ -187,6 +191,7 @@ public class SupportTicketService {
             throw new RuntimeException("Admin notes are required when rejecting a ticket.");
         }
         SupportTicket ticket = findTicket(id);
+        requireOpenTicket(ticket);
         ticket.setStatus(SupportTicketStatus.REJECTED);
         ticket.setHandledBy(admin);
         ticket.setResolvedAt(LocalDateTime.now());
@@ -219,6 +224,12 @@ public class SupportTicketService {
     private SupportTicket findTicket(Long id) {
         return ticketRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Support ticket not found."));
+    }
+
+    private void requireOpenTicket(SupportTicket ticket) {
+        if (ticket.getStatus() == SupportTicketStatus.RESOLVED || ticket.getStatus() == SupportTicketStatus.REJECTED) {
+            throw new RuntimeException("This support ticket is already closed and cannot be changed.");
+        }
     }
 
     private String nextTicketNumber() {

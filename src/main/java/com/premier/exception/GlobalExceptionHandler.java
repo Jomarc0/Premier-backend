@@ -90,6 +90,7 @@ public class GlobalExceptionHandler {
                 || message.equals("Support ticket storage is not ready. Please ask admin to run the support ticket database migration.")
                 || message.equals("Admin notes are required when rejecting a ticket.")
                 || message.equals("Use the resolve or reject action to close a ticket.")
+                || message.equals("This support ticket is already closed and cannot be changed.")
                 || message.equals("Payment already processed recently. Please wait a moment.")
                 || message.equals("Too many login attempts. Please try again later.")
                 || message.startsWith("Account is ")
