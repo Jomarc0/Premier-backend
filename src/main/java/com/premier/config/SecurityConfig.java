@@ -50,17 +50,17 @@ public class SecurityConfig {
                 .contentTypeOptions(contentType -> {})
                 .frameOptions(frame -> frame.deny())
                 .contentSecurityPolicy(csp -> csp.policyDirectives(
-                    "default-src 'self'; " +
-                    "script-src 'self' https://us-assets.i.posthog.com; " +
-                    "style-src 'self' 'unsafe-inline'; " +
-                    "img-src 'self' data: https:; " +
-                    "font-src 'self' data:; " +
-                    "connect-src 'self' https://premiertranspo.onrender.com " +
-                    "https://premierusers.vercel.app https://premierrfid.vercel.app " +
-                    "https://premierdriver.vercel.app https://premieradmin.vercel.app " +
-                    "https://premier-staff.vercel.app https://us.i.posthog.com " +
-                    "https://us-assets.i.posthog.com; " +
-                    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"))
+                	    "default-src 'self'; " +
+                	    "script-src 'self' https://us-assets.i.posthog.com; " +
+                	    "style-src 'self' 'unsafe-inline' https://us-assets.i.posthog.com; " +
+                	    "img-src 'self' data: https:; " +
+                	    "font-src 'self' data:; " +
+                	    "connect-src 'self' https://premiertranspo.onrender.com " +
+                	    "https://premierusers.vercel.app https://premierrfid.vercel.app " +
+                	    "https://premierdriver.vercel.app https://premieradmin.vercel.app " +
+                	    "https://premier-staff.vercel.app https://us.i.posthog.com " +
+                	    "https://us-assets.i.posthog.com; " +
+                	    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"))
                 .referrerPolicy(referrer -> referrer
                     .policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
                 .addHeaderWriter(new StaticHeadersWriter("Permissions-Policy",
