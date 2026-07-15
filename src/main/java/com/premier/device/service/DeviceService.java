@@ -81,7 +81,7 @@ public class DeviceService {
         nonceRepository.save(DeviceNonce.builder()
                 .device(device)
                 .nonce(nonce.trim())
-                .requestTimestamp(LocalDateTime.ofInstant(requestedAt, ZoneOffset.UTC))
+                .requestTimestamp(LocalDateTime.ofInstant(requestedAt, ZoneId.of("Asia/Manila")))
                 .build());
     }
 

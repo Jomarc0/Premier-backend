@@ -16,6 +16,7 @@ import com.premier.rfid.RfidUidCaptureService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,6 +28,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/admin")
 @RequiredArgsConstructor
+@Slf4j
 public class AdminController {
 
     private final AdminService       adminService;
@@ -56,9 +58,17 @@ public class AdminController {
         if (msg != null && msg.contains("disabled"))
             return ResponseEntity.status(403)
                 .body(ApiResponse.error(msg));
-        return ResponseEntity.status(401)
-            .body(ApiResponse.error(
-                msg != null ? msg : "Unauthorized"));
+        if ("No authorization token".equals(msg)
+                || "Admin not found".equals(msg)) {
+            return ResponseEntity.status(401)
+                .body(ApiResponse.error(msg));
+        }
+
+        // Do not report ordinary database or service failures as expired sessions.
+        // The admin frontend correctly logs out on 401 responses.
+        log.error("Admin request failed", ex);
+        return ResponseEntity.internalServerError()
+            .body(ApiResponse.error("Unable to complete the admin request."));
     }
 
     //HELPER 

@@ -1,5 +1,7 @@
 FROM eclipse-temurin:17-jdk-jammy
 
+ENV TZ=Asia/Manila
+
 WORKDIR /app
 
 COPY .mvn/ .mvn/

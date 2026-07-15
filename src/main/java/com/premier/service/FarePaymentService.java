@@ -27,7 +27,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.time.Instant;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
@@ -78,7 +78,7 @@ public class FarePaymentService {
 
         String rawToken = newToken();
         String tokenHash = sha256(rawToken);
-        LocalDateTime expiresAt = nowUtc().plusSeconds(qrExpirationSeconds);
+        LocalDateTime expiresAt = nowManila().plusSeconds(qrExpirationSeconds);
 
         FareQrToken token = FareQrToken.builder()
                 .tokenHash(tokenHash)
@@ -112,7 +112,7 @@ public class FarePaymentService {
 
         String rawToken = newToken();
         String tokenHash = sha256(rawToken);
-        LocalDateTime expiresAt = nowUtc().plusSeconds(qrExpirationSeconds);
+        LocalDateTime expiresAt = nowManila().plusSeconds(qrExpirationSeconds);
 
         FareQrToken token = FareQrToken.builder()
                 .tokenHash(tokenHash)
@@ -148,7 +148,7 @@ public class FarePaymentService {
                 throw new RuntimeException("QR fare token expired. Please generate a new one.");
             }
 
-            if (token.getExpiresAt().isBefore(nowUtc())) {
+            if (token.getExpiresAt().isBefore(nowManila())) {
                 token.setStatus(FareQrTokenStatus.EXPIRED);
                 fareQrTokenRepository.save(token);
                 throw new RuntimeException("QR fare token expired. Please generate a new one.");
@@ -183,7 +183,7 @@ public class FarePaymentService {
             throw new RuntimeException("Invalid QR fare token.");
         }
 
-        if (token.getStatus() == FareQrTokenStatus.ACTIVE && token.getExpiresAt().isBefore(nowUtc())) {
+        if (token.getStatus() == FareQrTokenStatus.ACTIVE && token.getExpiresAt().isBefore(nowManila())) {
             token.setStatus(FareQrTokenStatus.EXPIRED);
             fareQrTokenRepository.save(token);
         }
@@ -196,7 +196,7 @@ public class FarePaymentService {
                     .orElse(null);
         }
 
-        long remaining = Math.max(0, java.time.Duration.between(nowUtc(), token.getExpiresAt()).getSeconds());
+        long remaining = Math.max(0, java.time.Duration.between(nowManila(), token.getExpiresAt()).getSeconds());
         return ApiResponse.success("QR fare token status fetched.",
                 FareQrStatusResponse.builder()
                         .status(token.getStatus().name())
@@ -223,7 +223,7 @@ public class FarePaymentService {
                         if (token.getStatus() == FareQrTokenStatus.USED) {
                             throw new RuntimeException("QR fare token has already been used.");
                         }
-                        if ((token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc()))
+                        if ((token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila()))
                                 && !offlineQrWasCapturedWhileValid(request, token)) {
                             token.setStatus(FareQrTokenStatus.EXPIRED);
                             fareQrTokenRepository.save(token);
@@ -268,7 +268,7 @@ public class FarePaymentService {
                 throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
             }
 
-            if (token.getExpiresAt().isBefore(nowUtc())) {
+            if (token.getExpiresAt().isBefore(nowManila())) {
                 token.setStatus(FareQrTokenStatus.EXPIRED);
                 fareQrTokenRepository.save(token);
                 throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
@@ -313,7 +313,7 @@ public class FarePaymentService {
                         if (token.getStatus() == FareQrTokenStatus.USED) {
                             throw new RuntimeException("Mobile NFC token has already been used.");
                         }
-                        if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowUtc())) {
+                        if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila())) {
                             token.setStatus(FareQrTokenStatus.EXPIRED);
                             fareQrTokenRepository.save(token);
                             throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
@@ -593,7 +593,7 @@ public class FarePaymentService {
         if (timestamp == null || timestamp.isBlank()) {
             return null;
         }
-        return LocalDateTime.ofInstant(Instant.parse(timestamp.trim()), ZoneOffset.UTC);
+        return LocalDateTime.ofInstant(Instant.parse(timestamp.trim()), ZoneId.of("Asia/Manila"));
     }
 
     private FarePaymentResponse toFarePaymentResponse(Transaction tx, String source) {
@@ -641,8 +641,8 @@ public class FarePaymentService {
                 });
     }
 
-    private LocalDateTime nowUtc() {
-        return LocalDateTime.now(ZoneOffset.UTC);
+    private LocalDateTime nowManila() {
+        return LocalDateTime.now(ZoneId.of("Asia/Manila"));
     }
 
     private String normalizeQrPayload(String payload) {

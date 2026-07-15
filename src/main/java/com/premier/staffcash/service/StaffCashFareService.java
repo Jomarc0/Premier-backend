@@ -212,7 +212,7 @@ public class StaffCashFareService {
     private LocalDateTime parseTimestamp(String value) {
         if (value == null || value.isBlank()) return null;
         try {
-            return LocalDateTime.ofInstant(Instant.parse(value.trim()), ZoneOffset.UTC);
+            return LocalDateTime.ofInstant(Instant.parse(value.trim()), ZoneId.of("Asia/Manila"));
         } catch (RuntimeException ignored) {
             return null;
         }

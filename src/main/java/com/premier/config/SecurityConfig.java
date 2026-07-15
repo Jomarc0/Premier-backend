@@ -58,7 +58,7 @@ public class SecurityConfig {
                     "connect-src 'self' https://premiertranspo.onrender.com " +
                     "https://premierusers.vercel.app https://premierrfid.vercel.app " +
                     "https://premierdriver.vercel.app https://premieradmin.vercel.app " +
-                    "https://premier-staff.vercel.app; " +
+                    "https://premier-staff.vercel.app https://us.i.posthog.com; " +
                     "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"))
                 .referrerPolicy(referrer -> referrer
                     .policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))

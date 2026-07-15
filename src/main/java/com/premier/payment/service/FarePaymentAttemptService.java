@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 
 @Service
 @RequiredArgsConstructor
@@ -122,7 +122,7 @@ public class FarePaymentAttemptService {
             return null;
         }
         try {
-            return LocalDateTime.ofInstant(Instant.parse(timestamp.trim()), ZoneOffset.UTC);
+            return LocalDateTime.ofInstant(Instant.parse(timestamp.trim()), ZoneId.of("Asia/Manila"));
         } catch (Exception ignored) {
             return null;
         }
