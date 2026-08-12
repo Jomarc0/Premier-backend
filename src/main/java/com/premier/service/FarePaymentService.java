@@ -16,6 +16,7 @@ import com.premier.response.FarePaymentResponse;
 import com.premier.response.FareQrTokenResponse;
 import com.premier.response.FareQrStatusResponse;
 import com.premier.staffcash.service.StaffCashFareService;
+import com.premier.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,6 +59,7 @@ public class FarePaymentService {
     private final DeviceService deviceService;
     private final FarePaymentAttemptService farePaymentAttemptService;
     private final StaffCashFareService staffCashFareService;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, LocalDateTime> cooldownMap = new ConcurrentHashMap<>();
@@ -474,6 +476,7 @@ public class FarePaymentService {
                 .description(source + " Fare Payment" + (normalizedPlate != null ? " | " + normalizedPlate : ""))
                 .build();
         transactionRepository.save(tx);
+        realtimeEventPublisher.adminAndPassenger(passenger.getId(), "FARE_PAID", "TRANSACTION", tx.getId());
         farePaymentAttemptService.recordSuccess(tx, paymentMethod(source), rfidUid, normalizedPlate, request);
 
         if (passenger.getFcmToken() != null) {
@@ -732,3 +735,5 @@ public class FarePaymentService {
         return radiusKm * c;
     }
 }
+
+

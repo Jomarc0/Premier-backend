@@ -11,5 +11,6 @@ public class ChatRequest {
     @Size(max = 500, message = "Message too long (max 500 characters)")
     private String message;
 
+    @Size(max = 100, message = "Session ID is too long")
     private String sessionId;
 }

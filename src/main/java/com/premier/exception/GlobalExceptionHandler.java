@@ -1,8 +1,16 @@
 package com.premier.exception;
 
+import org.hibernate.LazyInitializationException;
+import org.hibernate.exception.JDBCConnectionException;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.http.*;
+import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.access.AccessDeniedException;
 
 import com.premier.response.ApiResponse;
 
@@ -14,6 +22,39 @@ import lombok.extern.slf4j.Slf4j;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(HttpMessageNotWritableException.class)
+    public ResponseEntity<?> handleNotWritable(HttpMessageNotWritableException ex) {
+        log.error("Response JSON serialization failed", ex);
+        return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Unable to complete the request."));
+    }
+
+    @ExceptionHandler({
+            CannotGetJdbcConnectionException.class,
+            DataAccessResourceFailureException.class,
+            JDBCConnectionException.class,
+            CannotAcquireLockException.class
+    })
+    public ResponseEntity<?> handleConnectionFailure(Exception ex) {
+        log.error("Database connection or lock failure — check pool size and concurrent load", ex);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.error("Database is busy. Please retry in a moment."));
+    }
+
+    @ExceptionHandler(LazyInitializationException.class)
+    public ResponseEntity<?> handleLazyInit(LazyInitializationException ex) {
+        log.error("Lazy association accessed outside an active persistence context", ex);
+        return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Unable to complete the request."));
+    }
+
+    @ExceptionHandler(DataAccessException.class)
+    public ResponseEntity<?> handleDataAccess(DataAccessException ex) {
+        log.error("Database access failed", ex);
+        return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Unable to complete the request."));
+    }
+
     @ExceptionHandler(PassengerNotFoundException.class)
     public ResponseEntity<?> handleNotFound(PassengerNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
@@ -24,6 +65,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<?> handleInvalidRfid(InvalidRfidException ex) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<?> handleAccessDenied(AccessDeniedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiResponse.error("Access denied."));
     }
 
     @ExceptionHandler(InvalidTotpException.class)
@@ -93,6 +140,10 @@ public class GlobalExceptionHandler {
                 || message.equals("This support ticket is already closed and cannot be changed.")
                 || message.equals("Payment already processed recently. Please wait a moment.")
                 || message.equals("Too many login attempts. Please try again later.")
+                || message.equals("Invalid credentials.")
+                || message.equals("Account is locked. Try again later.")
+                || message.equals("Account is disabled.")
+                || message.equals("Invalid Google Authenticator code.")
                 || message.startsWith("Account is ")
                 || message.startsWith("Insufficient balance.");
     }

@@ -34,13 +34,18 @@ public class DialogflowService {
 
     @PostConstruct
     public void init() {
+        if (projectId == null || projectId.isBlank() || credentialsPath == null || credentialsPath.isBlank()) {
+            log.info("Dialogflow is disabled because project ID or credentials are not configured.");
+            return;
+        }
         try {
             //Works for local classpath AND Render /app/ files
-            InputStream credStream = getCredentialsStream();
-            
-            GoogleCredentials credentials = GoogleCredentials
-                .fromStream(credStream)
-                .createScoped("https://www.googleapis.com/auth/cloud-platform");
+            GoogleCredentials credentials;
+            try (InputStream credStream = getCredentialsStream()) {
+                credentials = GoogleCredentials
+                    .fromStream(credStream)
+                    .createScoped("https://www.googleapis.com/auth/cloud-platform");
+            }
 
             SessionsSettings settings = SessionsSettings.newBuilder()
                 .setCredentialsProvider(FixedCredentialsProvider.create(credentials))

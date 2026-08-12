@@ -1,7 +1,6 @@
 package com.premier.config;
 
 import com.premier.admin.security.AdminJwtUtil;
-import com.premier.driver.security.DriverJwtUtil;
 import com.premier.security.JwtUtil;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,21 +28,18 @@ public class WebSocketConfig
 
     private final JwtUtil jwtUtil;
     private final AdminJwtUtil adminJwtUtil;
-    private final DriverJwtUtil driverJwtUtil;
 
     public WebSocketConfig(JwtUtil jwtUtil,
-                           AdminJwtUtil adminJwtUtil,
-                           DriverJwtUtil driverJwtUtil) {
+                           AdminJwtUtil adminJwtUtil) {
         this.jwtUtil = jwtUtil;
         this.adminJwtUtil = adminJwtUtil;
-        this.driverJwtUtil = driverJwtUtil;
     }
 
     @Override
     public void configureMessageBroker(
             MessageBrokerRegistry registry) {
         // Admin dashboard subscribes
-        registry.enableSimpleBroker("/topic");
+        registry.enableSimpleBroker("/topic", "/queue");
         // Clients send messages 
         registry.setApplicationDestinationPrefixes("/app");
     }
@@ -54,6 +50,10 @@ public class WebSocketConfig
         registry.addEndpoint("/ws")
                 .setAllowedOriginPatterns(AllowedOrigins.parse(allowedOrigins).toArray(String[]::new))
                 .withSockJS();
+        // Native STOMP endpoint for React Native, which does not implement the
+        // SockJS browser transports. It shares the exact same authentication.
+        registry.addEndpoint("/ws-native")
+                .setAllowedOriginPatterns(AllowedOrigins.parse(allowedOrigins).toArray(String[]::new));
     }
 
     @Override
@@ -92,12 +92,6 @@ public class WebSocketConfig
                     null,
                     List.of(new SimpleGrantedAuthority(role)));
         }
-        if (driverJwtUtil.isDriverToken(token) && driverJwtUtil.validateToken(token)) {
-            return new UsernamePasswordAuthenticationToken(
-                    driverJwtUtil.extractPlateNumber(token),
-                    null,
-                    List.of(new SimpleGrantedAuthority("ROLE_DRIVER")));
-        }
         if (jwtUtil.isFullToken(token)) {
             return new UsernamePasswordAuthenticationToken(
                     jwtUtil.extractPassengerId(token),
@@ -115,13 +109,23 @@ public class WebSocketConfig
         if (destination == null) {
             return;
         }
-        boolean adminOrStaff = auth.getAuthorities().stream().anyMatch(a ->
+        boolean admin = auth.getAuthorities().stream().anyMatch(a ->
                 a.getAuthority().equals("ADMIN")
-                        || a.getAuthority().equals("SUPER_ADMIN")
-                        || a.getAuthority().equals("STAFF")
-                        || a.getAuthority().equals("ROLE_DRIVER"));
-        if (destination.startsWith("/topic/bus-locations") && !adminOrStaff) {
+                        || a.getAuthority().equals("SUPER_ADMIN"));
+        boolean staffOrAdmin = admin || auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("STAFF"));
+        if (destination.startsWith("/topic/admin/") && !admin) {
+            throw new SecurityException("Not allowed to subscribe to admin real-time events.");
+        }
+        if (destination.startsWith("/topic/bus-locations") && !staffOrAdmin) {
             throw new SecurityException("Not allowed to subscribe to bus locations.");
+        }
+        if (destination.startsWith("/topic/staff/") && !staffOrAdmin) {
+            throw new SecurityException("Not allowed to subscribe to staff real-time events.");
+        }
+        if (destination.startsWith("/user/") && auth.getAuthorities().stream()
+                .noneMatch(a -> a.getAuthority().equals("ROLE_PASSENGER"))) {
+            throw new SecurityException("Not allowed to subscribe to passenger real-time events.");
         }
     }
 

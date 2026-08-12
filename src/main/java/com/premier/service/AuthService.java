@@ -11,6 +11,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import com.premier.security.TotpSecretCrypto;
+import com.premier.realtime.RealtimeEventPublisher;
 
 import java.time.LocalDateTime;
 import java.time.Duration;
@@ -26,6 +29,9 @@ public class AuthService {
     private final PassengerRepository passengerRepository;
     private final JwtUtil jwtUtil;
     private final TotpService totpService;
+    private final PasswordEncoder passwordEncoder;
+    private final TotpSecretCrypto totpSecretCrypto;
+    private final RealtimeEventPublisher realtimeEventPublisher;
     private final Map<String, Integer> loginAttempts = new ConcurrentHashMap<>();
     private final Map<String, LocalDateTime> loginCooldowns = new ConcurrentHashMap<>();
     private static final int MAX_LOGIN_ATTEMPTS = 5;
@@ -40,28 +46,28 @@ public class AuthService {
     public ApiResponse<PassengerResponse> register(
             RegisterRequest request) {
 
-        if (passengerRepository.existsByCardNumber(
-                request.getCardNumber()))
-            throw new RuntimeException(
-                "Card number already registered.");
-
-        if (passengerRepository.existsByRfidUid(
-                request.getRfidUid()))
-            throw new RuntimeException(
-                "RFID already registered.");
+        Passenger passenger = passengerRepository.findByCardNumber(request.getCardNumber().trim())
+                .orElseThrow(() -> new RuntimeException("Invalid card number or activation code."));
+        if (passenger.getStatus() != PassengerStatus.AVAILABLE
+                || passenger.getActivationCodeHash() == null
+                || passenger.getActivationExpiresAt() == null
+                || passenger.getActivationExpiresAt().isBefore(LocalDateTime.now())
+                || !passwordEncoder.matches(request.getActivationCode(), passenger.getActivationCodeHash())) {
+            throw new RuntimeException("Invalid card number or activation code.");
+        }
 
         String twofaSecret = totpService.generateSecret();
 
-        Passenger passenger = Passenger.builder()
-                .cardNumber(request.getCardNumber())
-                .rfidUid(request.getRfidUid())
-                .twofaSecret(twofaSecret)
-                .is2FaEnabled(true)  // 
-                .status(PassengerStatus.ACTIVE)
-                .build();
+        passenger.setTwofaSecret(totpSecretCrypto.encrypt(twofaSecret));
+        passenger.setIs2FaEnabled(false);
+        passenger.setActivationCodeHash(null);
+        passenger.setActivationExpiresAt(null);
+        passenger.setActivatedAt(LocalDateTime.now());
+        passenger.setStatus(PassengerStatus.AVAILABLE);
 
         passengerRepository.save(passenger);
-        log.info("Passenger registered: cardNumber={}",
+        realtimeEventPublisher.admin("PASSENGER_UPDATED", "PASSENGER", passenger.getId());
+        log.info("Passenger activated: cardNumber={}",
             mask(request.getCardNumber()));
 
         return ApiResponse.success(
@@ -129,21 +135,22 @@ public class AuthService {
 
         if (passenger.getTwofaSecret() == null) {
             String newSecret = totpService.generateSecret();
-            passenger.setTwofaSecret(newSecret);
+            passenger.setTwofaSecret(totpSecretCrypto.encrypt(newSecret));
             passengerRepository.save(passenger); 
             log.info("Generated new TOTP secret for passenger: {}", passengerId);
         }
 
+        String totpSecret = totpSecretCrypto.decrypt(passenger.getTwofaSecret());
         String qrCodeUrl = totpService.generateQrCodeUrl(
-            passenger.getTwofaSecret(),
+            totpSecret,
             "Passenger #" + passenger.getId());
 
         return ApiResponse.success(
             "Scan QR code with Google Authenticator.",
             TotpSetupResponse.builder()
-                .secret(passenger.getTwofaSecret())
+                .secret(null)
                 .qrCodeUrl(qrCodeUrl)
-                .manualEntryKey(passenger.getTwofaSecret())
+                .manualEntryKey(totpSecret)
                 .is2FaEnabled(passenger.getIs2FaEnabled())
                 .build());
     }
@@ -185,13 +192,17 @@ public class AuthService {
 
 
         boolean isValid = totpService.verifyCode(
-            passenger.getTwofaSecret(),
+            totpSecretCrypto.decrypt(passenger.getTwofaSecret()),
             request.getTotpCode());
 
         if (!isValid) {
             recordFailedTotp(passengerId);
             throw new InvalidTotpException(
                 "Invalid code. Please try again.");
+        }
+
+        if (!totpSecretCrypto.isEncrypted(passenger.getTwofaSecret())) {
+            passenger.setTwofaSecret(totpSecretCrypto.encrypt(passenger.getTwofaSecret()));
         }
 
         clearTotpFailures(passengerId);
@@ -206,6 +217,7 @@ public class AuthService {
             log.info("Activated newly issued passenger card: {}", passenger.getId());
         }
         passengerRepository.save(passenger);
+        realtimeEventPublisher.adminAndPassenger(passenger.getId(), "PASSENGER_UPDATED", "PASSENGER", passenger.getId());
 
         String fullToken = jwtUtil.generateFullToken(
             passenger.getId());

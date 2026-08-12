@@ -5,6 +5,7 @@ import com.premier.request.FcmTokenRequest;
 import com.premier.response.ApiResponse;
 import com.premier.model.Passenger;
 import com.premier.repository.PassengerRepository;
+import com.premier.repository.PassengerFcmTokenRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -17,6 +18,18 @@ import java.util.Map;
 public class FirebaseService {
 
     private final PassengerRepository passengerRepository;
+    private final PassengerFcmTokenRepository passengerFcmTokenRepository;
+
+    public void sendNotification(Passenger passenger, String title, String body, Map<String, String> data) {
+        if (passenger == null || passenger.getId() == null) return;
+        java.util.LinkedHashSet<String> tokens = new java.util.LinkedHashSet<>();
+        if (passenger.getFcmToken() != null && !passenger.getFcmToken().isBlank()) tokens.add(passenger.getFcmToken());
+        passengerFcmTokenRepository.findByPassengerId(passenger.getId()).stream()
+                .map(com.premier.model.PassengerFcmToken::getFcmToken)
+                .filter(token -> token != null && !token.isBlank())
+                .forEach(tokens::add);
+        tokens.forEach(token -> sendNotification(token, title, body, data));
+    }
 
     //  SINGLE NOTIFICATION 
     public void sendNotification(
@@ -194,8 +207,14 @@ public class FirebaseService {
             Passenger passenger,
             FcmTokenRequest request) {
 
-        passenger.setFcmToken(request.getFcmToken());
-        passengerRepository.save(passenger);
+        passengerFcmTokenRepository.findByFcmToken(request.getFcmToken())
+                .ifPresentOrElse(existing -> {
+                    if (!existing.getPassenger().getId().equals(passenger.getId())) {
+                        existing.setPassenger(passenger);
+                    }
+                    passengerFcmTokenRepository.save(existing);
+                }, () -> passengerFcmTokenRepository.save(com.premier.model.PassengerFcmToken.builder()
+                        .passenger(passenger).fcmToken(request.getFcmToken()).build()));
 
         
         log.info("FCM token updated for passenger: ID={}", 
@@ -210,13 +229,8 @@ public class FirebaseService {
     public void broadcastToAll(
             String title, String body) {
 
-        List<String> tokens = passengerRepository
-            .findAll()
-            .stream()
-            .filter(p -> p.getFcmToken() != null
-                && !p.getFcmToken().isEmpty())
-            .map(Passenger::getFcmToken)
-            .toList();
+        List<String> tokens = passengerFcmTokenRepository.findAll().stream()
+            .map(com.premier.model.PassengerFcmToken::getFcmToken).distinct().toList();
 
         if (!tokens.isEmpty()) {
             sendToMultiple(tokens, title, body);

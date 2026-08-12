@@ -18,7 +18,6 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.format.DateTimeFormatter;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -86,7 +85,7 @@ public class PremierBotKnowledgeService {
         }
 
         if (containsAny(text, "top up", "top-up", "topup", "load", "recharge", "paymongo")) {
-            return topUpReply(passenger);
+            return topUpReply(text, passenger);
         }
 
         if (containsAny(text, "payment failed", "failed payment", "cannot pay", "fare failed", "insufficient", "deduct failed")) {
@@ -95,6 +94,11 @@ public class PremierBotKnowledgeService {
 
                     Try checking your balance, regenerate QR/NFC token if needed, and tap only once. If money was deducted but no ride was recorded, submit a support ticket for admin review.
                     """.trim(), "LOCAL_PAYMENT_FAILED", "OPEN_SUPPORT_TICKET_FORM", List.of("Check balance", "Top-up help", "Open ticket"));
+        }
+
+        if (containsAny(text, "fare deduction", "fare dispute", "wrong fare", "deducted twice")) {
+            return action("Fares are recorded when a valid payment is processed. If you think a fare was deducted incorrectly, check your recent transactions and submit a support ticket with the transaction time and reference number.",
+                    "LOCAL_FARE_DEDUCTION", "OPEN_SUPPORT_TICKET_FORM", List.of("Recent transaction", "Open ticket"));
         }
 
         if (containsAny(text, "rfid", "card", "lost", "stolen", "freeze", "blocked", "damaged", "replacement")) {
@@ -132,8 +136,10 @@ public class PremierBotKnowledgeService {
         return null;
     }
 
-    private ChatResponse topUpReply(Passenger passenger) {
-        if (passenger != null) {
+    private ChatResponse topUpReply(String text, Passenger passenger) {
+        boolean asksAboutProblem = containsAny(text, "failed", "fail", "wrong", "not update", "didnt update",
+                "didn't update", "pending", "status", "deducted", "missing", "balance");
+        if (asksAboutProblem && passenger != null) {
             List<TopUpRequest> topUps = topUpRequestRepository.findByPassengerIdOrderByCreatedAtDesc(passenger.getId());
             if (!topUps.isEmpty()) {
                 TopUpRequest latest = topUps.get(0);
@@ -141,13 +147,14 @@ public class PremierBotKnowledgeService {
                         "LOCAL_TOPUP_STATUS", List.of("Payment failed", "Check balance", "Open ticket"));
             }
         }
-        return response("To top up, open your passenger dashboard, choose a top-up amount, continue to the PayMongo checkout, and finish payment. If the checkout was paid but your balance did not update, submit a support ticket with your reference number.",
-                "LOCAL_TOPUP_HELP", List.of("Check balance", "Payment failed", "Open ticket"));
+        return response("To top up, open your passenger dashboard, choose a top-up amount, continue to the PayMongo checkout, and finish payment. After the payment is verified, check your updated balance. If a completed payment does not update your balance, submit a support ticket with the reference number.",
+                "LOCAL_TOPUP_HELP", List.of("Check balance", "Top-up issue", "Open ticket"));
     }
 
     private ChatResponse rfidCardReply(String text, Passenger passenger) {
         if (containsAny(text, "lost", "stolen", "freeze", "block")) {
-            return action("Lost or stolen RFID cards must be reviewed by an admin before freezing or replacement. Submit a support ticket immediately so staff can protect the card and guide replacement.", "LOCAL_CARD_FREEZE", "OPEN_SUPPORT_TICKET_FORM", List.of("Open ticket", "Contact support"));
+            return response("If your RFID card is lost or stolen, report it immediately to protect your balance. The secure report asks for one final confirmation before it freezes the card. After it is frozen, a high-priority replacement request is created for the support team.",
+                    "LOCAL_LOST_CARD", List.of("Report lost card", "Cancel"));
         }
         if (passenger != null) {
             return response("Your card is currently " + label(passenger.getStatus().name()) + ". Card number: " + mask(passenger.getCardNumber()) + ". For replacement, damaged card, or status changes, submit a support ticket for admin review.",
@@ -177,10 +184,10 @@ public class PremierBotKnowledgeService {
         if (passenger == null) {
             return action("Please log in to check account-specific ticket guidance, or open the support ticket form if you need to report a concern.", "LOCAL_TICKET_LOGIN_REQUIRED", "LOGIN", List.of("Login", "Open ticket"));
         }
-        String card = passenger.getCardNumber();
-        List<SupportTicket> tickets = supportTicketRepository.findAllByOrderByCreatedAtDesc().stream()
-                .filter(ticket -> card != null && card.equals(ticket.getCardNumber()))
-                .sorted(Comparator.comparing(SupportTicket::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+        // Always query by the authenticated passenger, never a client-supplied
+        // card number or a full-table scan. This prevents ticket-status IDOR.
+        List<SupportTicket> tickets = supportTicketRepository
+                .findByPassengerIdOrderByCreatedAtDesc(passenger.getId()).stream()
                 .limit(3)
                 .toList();
         if (tickets.isEmpty()) {
@@ -245,3 +252,5 @@ public class PremierBotKnowledgeService {
         return value == null || value.isBlank() ? "Unavailable" : value;
     }
 }
+
+

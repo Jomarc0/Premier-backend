@@ -81,25 +81,60 @@ public class ChatbotController {
                     .build());
         }
 
-        log.info("Chat [{}]: {}", userId, sanitized);
+        log.info("Chat request received for {} ({} characters).", userId, sanitized.length());
 
-        if (isGeneralHelpRequest(sanitized)) {
-            ChatResponse local = premierBotKnowledgeService.answer(sanitized, passenger);
-            if (local != null) {
-                return ResponseEntity.ok(local);
+        // Dialogflow is the primary conversation router. The backend only supplies
+        // authoritative data/actions after an intent has been identified.
+        ChatResponse response = dialogflowService.detectIntent(sanitized, request.getSessionId());
+
+        // These are the small, supported passenger-help rules. Keep the
+        // response authoritative even if a Dialogflow response was configured
+        // with an old phone number, payment promise, or invented policy.
+        if (isExplicitLostCardReport(sanitized)) {
+            return ResponseEntity.ok(ChatResponse.builder()
+                    .success(true)
+                    .intent("LOST_CARD_REPORT")
+                    .reply("Opening the secure lost-card report. Review the warning, enter your email for updates, then confirm only if you want to freeze this card.")
+                    .recommendedAction("REPORT_LOST_CARD")
+                    .build());
+        }
+        if (isExplicitTicketCreation(sanitized)) {
+            return ResponseEntity.ok(ticketFormResponse());
+        }
+        if (isHumanSupportRequest(response, sanitized)) {
+            return ResponseEntity.ok(ChatResponse.builder()
+                    .success(true)
+                    .intent("SUPPORT_REQUEST")
+                    .reply("I can help you submit a support ticket so the support team can investigate. Would you like to create a ticket?")
+                    .recommendedAction("OPEN_SUPPORT_TICKET_FORM")
+                    .quickReplies(List.of("Open ticket", "Cancel"))
+                    .build());
+        }
+        if (isKnownSelfServiceRequest(sanitized)) {
+            ChatResponse ruleResponse = premierBotKnowledgeService.answer(sanitized, passenger);
+            if (ruleResponse != null) {
+                return ResponseEntity.ok(ruleResponse);
             }
         }
 
-        ChatResponse localKnowledge = premierBotKnowledgeService.answer(sanitized, passenger);
-        if (localKnowledge != null) {
-            if (shouldUseGemini(sanitized, localKnowledge)) {
-                localKnowledge.setReply(geminiService.enhanceSupportReply(sanitized, localKnowledge.getReply()));
+        // Ticket status is authoritative account data. It is never supplied by
+        // Dialogflow or Gemini, even when either service recognizes the phrase.
+        if (isTicketStatusIntent(response, sanitized)) {
+            ChatResponse ticketStatus = premierBotKnowledgeService.answer("ticket status", passenger);
+            if (ticketStatus != null) {
+                return ResponseEntity.ok(ticketStatus);
             }
-            return ResponseEntity.ok(localKnowledge);
         }
 
-        ChatResponse response = dialogflowService
-            .detectIntent(sanitized, request.getSessionId());
+        // Lost-card guidance is a fixed account-protection procedure. The bot
+        // directs the passenger to the dedicated confirmation screen; only that
+        // screen can submit the irreversible freeze request.
+        if (isLostCardIntent(response, sanitized)) {
+            ChatResponse lostCardReply = premierBotKnowledgeService.answer("lost card", passenger);
+            if (lostCardReply != null) {
+                return ResponseEntity.ok(lostCardReply);
+            }
+        }
 
         SensitiveIntent sensitiveIntent = detectSensitiveIntent(sanitized, response.getIntent());
         if (sensitiveIntent != null) {
@@ -112,39 +147,128 @@ public class ChatbotController {
                     .build());
         }
 
-        if (!response.isSuccess()) {
-            response = ChatResponse.builder()
+        if (isSupportTicketIntent(response)) {
+            return ResponseEntity.ok(ChatResponse.builder()
+                    .success(true)
+                    .reply("I can help you submit a support ticket. Please complete the secure form so an admin can review your concern.")
+                    .intent(response.getIntent())
+                    .sensitive(false)
+                    .recommendedAction("OPEN_SUPPORT_TICKET_FORM")
+                    .quickReplies(List.of("Open ticket", "Cancel"))
+                    .build());
+        }
+
+        // If Dialogflow is unavailable, retain safe local rules for known
+        // passenger-help phrases instead of handing them to Gemini.
+        if (shouldUseGemini(response)) {
+            ChatResponse localKnowledge = premierBotKnowledgeService.answer(sanitized, passenger);
+            if (localKnowledge != null) {
+                return ResponseEntity.ok(localKnowledge);
+            }
+        }
+
+        if (!shouldUseGemini(response)) {
+            response.setSensitive(false);
+            return ResponseEntity.ok(response);
+        }
+
+        // Dialogflow fallback is the only Gemini path. Gemini receives only a
+        // non-sensitive, predefined fallback context and cannot invoke business logic.
+        String safeFallback = "I couldn't match that to a supported passenger-help request. "
+                + "I can help with general assistance, top-ups, lost-card procedures, and support tickets. "
+                + "Please rephrase your question or contact support.";
+        return ResponseEntity.ok(ChatResponse.builder()
                 .success(true)
-                .reply(getLocalReply(sanitized))
-                .build();
-        }
-
-        String reply = response.getReply();
-        if (shouldUseGemini(sanitized, response)) {
-            reply = geminiService.enhanceSupportReply(sanitized, reply);
-        }
-        response.setReply(reply);
-        response.setSensitive(false);
-
-        return ResponseEntity.ok(response);
+                .reply(geminiService.enhanceSupportReply(sanitized, safeFallback))
+                .intent("FALLBACK")
+                .sensitive(false)
+                .quickReplies(List.of("Top-up help", "Lost RFID card", "Open ticket"))
+                .build());
     }
 
-    private boolean shouldUseGemini(String message, ChatResponse response) {
+    private boolean shouldUseGemini(ChatResponse response) {
         String intent = response.getIntent() == null ? "" : response.getIntent().toLowerCase();
         return intent.contains("fallback")
                 || intent.isBlank()
-                || message.length() > 120
+                || !response.isSuccess()
                 || response.getReply() == null
                 || response.getReply().isBlank();
+    }
+
+    private boolean isSupportTicketIntent(ChatResponse response) {
+        String intent = response.getIntent() == null ? "" : response.getIntent().toLowerCase();
+        return (intent.contains("complaint")
+                || intent.contains("support_request")
+                || intent.contains("create_support")
+                || intent.contains("contact_support"))
+                && !intent.contains("status")
+                && !intent.contains("detail")
+                && !intent.contains("message");
+    }
+
+    private boolean isExplicitTicketCreation(String message) {
+        String text = message == null ? "" : message.toLowerCase().trim();
+        return text.equals("open ticket") || text.equals("create ticket") || text.equals("create a ticket")
+                || text.equals("submit ticket") || text.equals("submit a ticket")
+                || text.equals("yes, create a ticket") || text.equals("yes create a ticket");
+    }
+
+    private boolean isExplicitLostCardReport(String message) {
+        String text = message == null ? "" : message.toLowerCase().trim();
+        return text.equals("report lost card") || text.equals("report a lost card")
+                || text.equals("freeze my card") || text.equals("freeze card")
+                || text.equals("block my card");
+    }
+
+    private boolean isHumanSupportRequest(ChatResponse response, String message) {
+        String intent = response.getIntent() == null ? "" : response.getIntent().toLowerCase();
+        String text = message == null ? "" : message.toLowerCase();
+        return intent.contains("contact_support") || intent.contains("support_request")
+                || text.contains("contact support") || text.contains("talk to support")
+                || text.contains("customer support") || text.contains("report a problem")
+                || text.contains("still need help");
+    }
+
+    private boolean isKnownSelfServiceRequest(String message) {
+        String text = message == null ? "" : message.toLowerCase();
+        return text.contains("top up") || text.contains("top-up") || text.contains("topup")
+                || text.contains("reload") || text.contains("payment failed") || text.contains("fare failed")
+                || text.contains("fare deduction") || text.contains("fare dispute")
+                || text.contains("lost") || text.contains("stolen") || text.contains("missing")
+                || text.contains("rfid") || text.contains("check balance")
+                || text.equals("i need help") || text.equals("need help") || text.equals("help me");
+    }
+
+    private ChatResponse ticketFormResponse() {
+        return ChatResponse.builder()
+                .success(true)
+                .intent("CREATE_TICKET")
+                .reply("Please complete the secure support-ticket form. Your signed-in account will be linked to the request automatically.")
+                .recommendedAction("OPEN_SUPPORT_TICKET_FORM")
+                .build();
+    }
+
+    private boolean isTicketStatusIntent(ChatResponse response, String message) {
+        String intent = response.getIntent() == null ? "" : response.getIntent().toLowerCase();
+        String text = message == null ? "" : message.toLowerCase();
+        return intent.contains("ticket_status")
+                || intent.contains("support_ticket_status")
+                || ((text.contains("ticket") || text.contains("support request") || text.contains("case"))
+                && (text.contains("status") || text.contains("update") || text.contains("progress")));
+    }
+
+    private boolean isLostCardIntent(ChatResponse response, String message) {
+        String intent = response.getIntent() == null ? "" : response.getIntent().toLowerCase();
+        String text = message == null ? "" : message.toLowerCase();
+        return intent.contains("lost_card") || intent.contains("lostcard")
+                || ((text.contains("lost") || text.contains("missing") || text.contains("stolen"))
+                && (text.contains("card") || text.contains("rfid")));
     }
 
     private SensitiveIntent detectSensitiveIntent(String message, String dialogflowIntent) {
         String text = (message + " " + (dialogflowIntent == null ? "" : dialogflowIntent)).toLowerCase();
         if (text.contains("stolen")) {
             return new SensitiveIntent("STOLEN_CARD", SupportTicketIssueType.LOST_CARD);
-        }
-        if (text.contains("lost") || text.contains("missing")) {
-            return new SensitiveIntent("LOST_CARD", SupportTicketIssueType.LOST_CARD);
         }
         if (text.contains("freeze") || text.contains("block my card") || text.contains("deactivate my card")) {
             return new SensitiveIntent("FREEZE_CARD_REQUEST", SupportTicketIssueType.FREEZE_CARD);
@@ -157,17 +281,6 @@ public class ChatbotController {
 
     private record SensitiveIntent(String intentName, SupportTicketIssueType issueType) {}
 
-    private boolean isGeneralHelpRequest(String message) {
-        String text = message == null ? "" : message.toLowerCase();
-        return text.equals("help")
-                || text.equals("i want help")
-                || text.equals("i need help")
-                || text.equals("can you help me")
-                || text.contains("customer support")
-                || text.contains("contact support")
-                || text.contains("support hotline");
-    }
-
     private String sanitize(String input) {
         if (input == null) return "";
         return input
@@ -176,30 +289,4 @@ public class ChatbotController {
             .trim();
     }
 
-    private String getLocalReply(String msg) {
-        String m = msg.toLowerCase();
-        if (m.contains("top-up") || m.contains("topup") ||
-            m.contains("recharge") || m.contains("load"))
-            return "For top-up issues, make sure the payment was completed. " +
-                "Balances usually reflect within 5-10 minutes.";
-        if (m.contains("fare") || m.contains("deduct"))
-            return "Fare deductions are automatic after a valid tap. " +
-                "Fare disputes are reviewed within 24 hours.";
-        if (m.contains("payment") || m.contains("failed"))
-            return "Check your GCash or Maya payment status and try again. " +
-                "If it still fails, call (02) 8888-171.";
-        if (m.contains("lost") || m.contains("rfid") ||
-            m.contains("card"))
-            return "Report lost RFID cards at (02) 8888-171 so staff can " +
-                "block and replace the card.";
-        if (m.contains("balance") || m.contains("check"))
-            return "Your balance is on your dashboard " +
-                "and updates after every transaction.";
-        if (m.contains("hello") || m.contains("hi") ||
-            m.contains("hey"))
-            return "Hello! Ask me about top-ups, fares, " +
-                "RFID cards, or payments!";
-        return "A support agent will respond within 24 hours. " +
-            "For urgent concerns, call (02) 8888-171.";
-    }
 }

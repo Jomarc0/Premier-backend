@@ -3,6 +3,7 @@ package com.premier.service;
 import com.premier.request.TopUpRequestDto;
 import com.premier.response.ApiResponse;
 import com.premier.response.TopUpResponse;
+import com.premier.realtime.RealtimeEventPublisher;
 import com.premier.model.*;
 import com.premier.repository.*;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -42,6 +43,7 @@ public class PayMongoService {
     private final FirebaseService firebaseService;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     //  CREATE PAYMENT LINK 
 
@@ -100,6 +102,7 @@ public class PayMongoService {
             topUpRequest.setReferenceNumber(referenceNumber);
             topUpRequest.setStatus(TransactionStatus.PENDING);
             topUpRequestRepository.save(topUpRequest);
+            realtimeEventPublisher.adminAndPassenger(passenger.getId(), "TOPUP_CREATED", "TOPUP", topUpRequest.getId());
 
             log.info("PayMongo link created: {} for passenger ID: {}",
                     linkId, passenger.getId());
@@ -285,13 +288,11 @@ public class PayMongoService {
         tx.setPaymentMethod(PaymentMethod.PAYMONGO);
         tx.setDescription("Top-up via PayMongo");
         transactionRepository.save(tx);
+        realtimeEventPublisher.adminAndPassenger(passenger.getId(), "TOPUP_COMPLETED", "TRANSACTION", tx.getId());
 
-        if (passenger.getFcmToken() != null) {
-            firebaseService.sendTopUpSuccess(
-                    passenger.getFcmToken(),
-                    amount.toString(),
-                    balanceAfter.toString());
-        }
+        firebaseService.sendNotification(passenger, "Top-up completed",
+                "Your top-up of ₱" + amount + " was successful. Your card balance has been updated.",
+                Map.of("type", "TOPUP"));
 
         log.info("Top-up SUCCESS: PHP {} for passenger ID: {}",
                 amount, passenger.getId());

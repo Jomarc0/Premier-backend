@@ -9,7 +9,10 @@ import com.premier.model.*;
 import com.premier.repository.*;
 import com.premier.response.ApiResponse;
 import com.premier.response.TotpSetupResponse;
+import com.premier.response.CardIssuanceResponse;
 import com.premier.service.TotpService;
+import com.premier.security.TotpSecretCrypto;
+import com.premier.realtime.RealtimeEventPublisher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.*;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -34,8 +37,10 @@ public class AdminService {
     private final TransactionRepository  transactionRepository;
     private final ActivityLogRepository  activityLogRepository;
     private final TotpService            totpService;
+    private final TotpSecretCrypto       totpSecretCrypto;
     private final DriverRepository       driverRepository;
     private final VehicleRepository      vehicleRepository;
+    private final RealtimeEventPublisher  realtimeEventPublisher;
 
     public AdminService(
             AdminRepository adminRepository,
@@ -45,8 +50,10 @@ public class AdminService {
             TransactionRepository transactionRepository,
             ActivityLogRepository activityLogRepository,
             TotpService totpService,
+            TotpSecretCrypto totpSecretCrypto,
             DriverRepository driverRepository,
-            VehicleRepository vehicleRepository) {
+            VehicleRepository vehicleRepository,
+            RealtimeEventPublisher realtimeEventPublisher) {
         this.adminRepository       = adminRepository;
         this.adminJwtUtil          = adminJwtUtil;
         this.passwordEncoder       = passwordEncoder;
@@ -54,8 +61,10 @@ public class AdminService {
         this.transactionRepository = transactionRepository;
         this.activityLogRepository = activityLogRepository;
         this.totpService           = totpService;
+        this.totpSecretCrypto      = totpSecretCrypto;
         this.driverRepository      = driverRepository;
         this.vehicleRepository     = vehicleRepository;
+        this.realtimeEventPublisher = realtimeEventPublisher;
     }
 
     // AUTH
@@ -106,7 +115,7 @@ public class AdminService {
             }
             if (admin.getTwofaSecret() == null ||
                 !totpService.verifyCode(
-                    admin.getTwofaSecret(), totpCode.trim())) {
+                    totpSecretCrypto.decrypt(admin.getTwofaSecret()), totpCode.trim())) {
                 throw new RuntimeException(
                     "Invalid Google Authenticator code.");
             }
@@ -139,18 +148,19 @@ public class AdminService {
     public ApiResponse<TotpSetupResponse> getAdminTotpSetup(Admin admin) {
         if (admin.getTwofaSecret() == null ||
             admin.getTwofaSecret().isBlank()) {
-            admin.setTwofaSecret(totpService.generateSecret());
+            admin.setTwofaSecret(totpSecretCrypto.encrypt(totpService.generateSecret()));
             adminRepository.save(admin);
         }
 
+        String totpSecret = totpSecretCrypto.decrypt(admin.getTwofaSecret());
         String qrCodeUrl = totpService.generateQrCodeUrl(
-            admin.getTwofaSecret(), admin.getUsername());
+            totpSecret, admin.getUsername());
 
         return ApiResponse.success(
             "Scan QR code with Google Authenticator.",
             TotpSetupResponse.builder()
-                .secret(admin.getTwofaSecret())
-                .manualEntryKey(admin.getTwofaSecret())
+                .secret(null)
+                .manualEntryKey(totpSecret)
                 .qrCodeUrl(qrCodeUrl)
                 .is2FaEnabled(Boolean.TRUE.equals(
                     admin.getIs2FaEnabled()))
@@ -168,7 +178,7 @@ public class AdminService {
 
         if (code == null || code.isBlank() ||
             !totpService.verifyCode(
-                admin.getTwofaSecret(), code.trim())) {
+                totpSecretCrypto.decrypt(admin.getTwofaSecret()), code.trim())) {
             throw new RuntimeException(
                 "Invalid Google Authenticator code.");
         }
@@ -265,6 +275,7 @@ public class AdminService {
         tx.setBalanceBefore(before);
         tx.setBalanceAfter(after);
         transactionRepository.save(tx);
+        realtimeEventPublisher.adminAndPassenger(passenger.getId(), "TRANSACTION_STATUS_CHANGED", "TRANSACTION", tx.getId());
 
         logActivity(admin, "APPROVE_TRANSACTION",
             "TRANSACTION", transactionId,
@@ -296,6 +307,7 @@ public class AdminService {
 
         tx.setStatus(TransactionStatus.FAILED);
         transactionRepository.save(tx);
+        realtimeEventPublisher.adminAndPassenger(tx.getPassenger().getId(), "TRANSACTION_STATUS_CHANGED", "TRANSACTION", tx.getId());
 
         logActivity(admin, "REJECT_TRANSACTION",
             "TRANSACTION", transactionId,
@@ -368,6 +380,8 @@ public class AdminService {
             UUID.randomUUID().toString()
                 .substring(0, 8).toUpperCase());
         transactionRepository.save(tx);
+        realtimeEventPublisher.adminAndPassenger(passengerId, "BALANCE_UPDATED", "PASSENGER", passengerId);
+        realtimeEventPublisher.adminAndPassenger(passengerId, "TRANSACTION_CREATED", "TRANSACTION", tx.getId());
 
         logActivity(admin, "ADD_BALANCE",
             "PASSENGER", passengerId,
@@ -421,6 +435,7 @@ public class AdminService {
         PassengerStatus oldStatus = passenger.getStatus();
         passenger.setStatus(status);
         passengerRepository.save(passenger);
+        realtimeEventPublisher.adminAndPassenger(passengerId, "CARD_STATUS_CHANGED", "PASSENGER", passengerId);
 
         logActivity(admin, action,
             "PASSENGER", passengerId,
@@ -439,7 +454,7 @@ public class AdminService {
     }
 
     @Transactional
-    public ApiResponse<Passenger> createPassenger(
+    public ApiResponse<CardIssuanceResponse> createPassenger(
             Admin admin,
             String rfidUid,
             String category) {
@@ -452,6 +467,7 @@ public class AdminService {
                 "RFID UID already registered.");
 
         String cardNumber = generateUniqueCardNumber();
+        String activationCode = generateActivationCode();
 
         Passenger passenger = Passenger.builder()
                 .cardNumber(cardNumber)
@@ -462,10 +478,13 @@ public class AdminService {
                 .createdByAdminId(admin != null ? admin.getId() : null)
                 .is2FaEnabled(false)
                 .status(PassengerStatus.AVAILABLE)
+                .activationCodeHash(passwordEncoder.encode(activationCode))
+                .activationExpiresAt(LocalDateTime.now().plusDays(7))
                 .build();
 
         Passenger saved =
             passengerRepository.save(passenger);
+        realtimeEventPublisher.admin("PASSENGER_CREATED", "PASSENGER", saved.getId());
 
         logActivity(admin, "CREATE_RFID_CARD",
             "PASSENGER", saved.getId(),
@@ -473,8 +492,10 @@ public class AdminService {
             " | Type: " + cardCategory,
             "localhost");
 
-        return ApiResponse.success(
-            "RFID card created successfully.", saved);
+        return ApiResponse.success("RFID card created successfully. Deliver the activation code only to the card holder.",
+                CardIssuanceResponse.builder()
+                        .passengerId(saved.getId()).cardNumber(saved.getCardNumber()).status(saved.getStatus())
+                        .activationCode(activationCode).activationExpiresAt(saved.getActivationExpiresAt()).build());
     }
 
     private String normalizeRfidUid(String rfidUid) {
@@ -510,6 +531,12 @@ public class AdminService {
         throw new RuntimeException("Unable to generate unique card number.");
     }
 
+    private String generateActivationCode() {
+        byte[] bytes = new byte[24];
+        CARD_NUMBER_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
     // DRIVER MANAGEMENT
     @Transactional
     public ApiResponse<Driver> createDriver(
@@ -517,6 +544,7 @@ public class AdminService {
             String fullName,
             String licenseNumber,
             String phoneNumber,
+            String password,
             DriverStatus status) {
 
         String normalizedLicense = normalizeRequired(
@@ -525,6 +553,10 @@ public class AdminService {
         if (driverRepository.existsByLicenseNumber(normalizedLicense))
             throw new RuntimeException(
                 "License number already registered.");
+
+        if (!totpSecretCrypto.isEncrypted(admin.getTwofaSecret())) {
+            admin.setTwofaSecret(totpSecretCrypto.encrypt(admin.getTwofaSecret()));
+        }
 
         Driver driver = Driver.builder()
             .fullName(normalizeRequired(fullName, "Full name"))
@@ -536,6 +568,7 @@ public class AdminService {
             .build();
 
         Driver saved = driverRepository.save(driver);
+        realtimeEventPublisher.admin("DRIVER_CREATED", "DRIVER", saved.getId());
 
         logActivity(admin, "CREATE_DRIVER",
             "DRIVER", saved.getId(),
@@ -580,6 +613,7 @@ public class AdminService {
             driver.setStatus(status);
 
         Driver saved = driverRepository.save(driver);
+        realtimeEventPublisher.admin("DRIVER_UPDATED", "DRIVER", saved.getId());
 
         logActivity(admin, "UPDATE_DRIVER",
             "DRIVER", driverId,
@@ -600,6 +634,7 @@ public class AdminService {
                 new RuntimeException("Driver not found."));
 
         driverRepository.delete(driver);
+        realtimeEventPublisher.admin("DRIVER_DELETED", "DRIVER", driverId);
 
         logActivity(admin, "DELETE_DRIVER",
             "DRIVER", driverId,
@@ -635,6 +670,7 @@ public class AdminService {
             .build();
 
         Vehicle saved = vehicleRepository.save(vehicle);
+        realtimeEventPublisher.admin("VEHICLE_CREATED", "VEHICLE", saved.getId());
 
         logActivity(admin, "CREATE_VEHICLE",
             "VEHICLE", saved.getId(),
@@ -680,6 +716,7 @@ public class AdminService {
             vehicle.setStatus(status);
 
         Vehicle saved = vehicleRepository.save(vehicle);
+        realtimeEventPublisher.admin("VEHICLE_UPDATED", "VEHICLE", saved.getId());
 
         logActivity(admin, "UPDATE_VEHICLE",
             "VEHICLE", vehicleId,
@@ -700,6 +737,7 @@ public class AdminService {
                 new RuntimeException("Vehicle not found."));
 
         vehicleRepository.delete(vehicle);
+        realtimeEventPublisher.admin("VEHICLE_DELETED", "VEHICLE", vehicleId);
 
         logActivity(admin, "DELETE_VEHICLE",
             "VEHICLE", vehicleId,
@@ -919,6 +957,7 @@ public class AdminService {
             .status("SUCCESS")
             .build();
         activityLogRepository.save(log);
+        realtimeEventPublisher.admin("ACTIVITY_LOG_CREATED", "ACTIVITY_LOG", log.getId());
     }
 
     private String normalizeRequired(

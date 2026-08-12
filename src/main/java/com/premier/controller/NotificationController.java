@@ -9,13 +9,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+
 @RestController
 @RequestMapping("/api/passenger/notifications")
 @RequiredArgsConstructor
 public class NotificationController {
 
     private final FirebaseService firebaseService;
-
     // Save FCM token when passenger logs in
     @PutMapping("/fcm-token")
     public ResponseEntity<?> updateFcmToken(

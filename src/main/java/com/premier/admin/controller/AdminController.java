@@ -10,9 +10,9 @@ import com.premier.admin.service.FleetAssignmentService;
 import com.premier.driver.model.*;
 import com.premier.driver.repository.DriverRepository;
 import com.premier.driver.repository.VehicleRepository;
-import com.premier.driver.service.DriverOperationalStatusService;
 import com.premier.response.ApiResponse;
 import com.premier.rfid.RfidUidCaptureService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -37,9 +37,9 @@ public class AdminController {
     private final AdminRepository    adminRepository;
     private final DriverRepository   driverRepository;
     private final VehicleRepository  vehicleRepository;
-    private final DriverOperationalStatusService driverOperationalStatusService;
     private final RfidUidCaptureService rfidUidCaptureService;
     private final FleetAssignmentService fleetAssignmentService;
+    private final ObjectMapper objectMapper;
 
     //  EXCEPTION HANDLER 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -86,6 +86,19 @@ public class AdminController {
         return adminRepository.findById(adminId)
             .orElseThrow(() ->
                 new RuntimeException("Admin not found"));
+    }
+
+    private <T> ResponseEntity<?> okWithSerializationGuard(
+            String endpoint, String message, T data) {
+        ApiResponse<T> body = ApiResponse.success(message, data);
+        try {
+            objectMapper.writeValueAsString(body);
+        } catch (Throwable ex) {
+            log.error("JSON serialization failed for {}", endpoint, ex);
+            return ResponseEntity.internalServerError()
+                .body(ApiResponse.error("Unable to complete the admin request."));
+        }
+        return ResponseEntity.ok(body);
     }
 
     // AUTH 
@@ -264,11 +277,9 @@ public class AdminController {
     public ResponseEntity<?> getAllDrivers(
             HttpServletRequest request) {
         getCurrentAdmin(request);
-        driverOperationalStatusService.reconcileStaleOperations();
         List<Driver> drivers = driverRepository.findAll();
-        return ResponseEntity.ok(
-            ApiResponse.success(
-                "Drivers fetched.", drivers));
+        return okWithSerializationGuard(
+            "GET /api/admin/drivers", "Drivers fetched.", drivers);
     }
 
     @PostMapping("/drivers")
@@ -285,6 +296,7 @@ public class AdminController {
             (String) body.get("fullName"),
             (String) body.get("licenseNumber"),
             (String) body.get("phoneNumber"),
+            (String) body.get("password"),
             status));
     }
 
@@ -321,11 +333,9 @@ public class AdminController {
     public ResponseEntity<?> getAllVehicles(
             HttpServletRequest request) {
         getCurrentAdmin(request);
-        driverOperationalStatusService.reconcileStaleOperations();
         List<Vehicle> vehicles = vehicleRepository.findAll();
-        return ResponseEntity.ok(
-            ApiResponse.success(
-                "Vehicles fetched.", vehicles));
+        return okWithSerializationGuard(
+            "GET /api/admin/vehicles", "Vehicles fetched.", vehicles);
     }
 
     @PostMapping("/vehicles")
@@ -535,3 +545,5 @@ public class AdminController {
             adminService.getLogStats());
     }
 }
+
+

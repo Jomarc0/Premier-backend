@@ -11,6 +11,7 @@ import com.premier.device.security.DeviceContext;
 import com.premier.device.service.DeviceService;
 import com.premier.response.ApiResponse;
 import com.premier.service.FarePaymentService;
+import com.premier.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -31,6 +32,7 @@ public class RfidController {
     private final DeviceService deviceService;
     private final DriverLocationRepository driverLocationRepository;
     private final RfidUidCaptureService rfidUidCaptureService;
+    private final RealtimeEventPublisher realtimeEventPublisher;
 
     private static final double SM_LIPA_LAT = 13.954781;
     private static final double SM_LIPA_LNG = 121.163096;
@@ -80,7 +82,8 @@ public class RfidController {
     public ResponseEntity<?> getTerminalVehicles() {
         return ResponseEntity.ok(ApiResponse.success(
                 "Active terminal vehicles fetched.",
-                vehicleRepository.findByStatus(VehicleStatus.ACTIVE)));
+                vehicleRepository.findByStatus(VehicleStatus.ACTIVE).stream()
+                        .map(RfidVehicleResponse::from).toList()));
     }
 
     @GetMapping("/registration/uid-request")
@@ -104,13 +107,15 @@ public class RfidController {
         }
     }
 
-    @PostMapping("/driver/gps")
-    public ResponseEntity<?> updateDriverGps(@RequestBody Map<String, Object> body) {
+    @PostMapping("/gps")
+    public ResponseEntity<?> updateVehicleGps(@RequestBody Map<String, Object> body) {
         try {
             String plateNumber = ((String) body.get("plateNumber")).toUpperCase().trim();
             deviceService.requirePlateAssignment(DeviceContext.get(), plateNumber);
             Double latitude = Double.valueOf(body.get("latitude").toString());
             Double longitude = Double.valueOf(body.get("longitude").toString());
+            double speed = optionalTelemetry(body, "speed", 0, 300);
+            double heading = optionalTelemetry(body, "heading", 0, 360);
             deviceService.validateFreshNonce(
                     DeviceContext.get(),
                     (String) body.get("requestNonce"),
@@ -133,15 +138,17 @@ public class RfidController {
                     })
                     .orElse(null);
 
-            driverLocationRepository.save(DriverLocation.builder()
+            DriverLocation location = driverLocationRepository.save(DriverLocation.builder()
                     .plateNumber(plateNumber)
                     .shiftId(shiftId)
                     .latitude(latitude)
                     .longitude(longitude)
-                    .speed(0.0)
-                    .heading(0.0)
+                    .speed(speed)
+                    .heading(heading)
                     .recordedAt(LocalDateTime.now())
                     .build());
+            realtimeEventPublisher.admin("VEHICLE_LOCATION_UPDATED", "VEHICLE_LOCATION", location.getId());
+            realtimeEventPublisher.staff("VEHICLE_LOCATION_UPDATED", "VEHICLE_LOCATION", location.getId());
 
             return ResponseEntity.ok(Map.of("status", "GPS updated", "plateNumber", plateNumber));
         } catch (Exception e) {
@@ -160,4 +167,17 @@ public class RfidController {
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         return radiusKm * c;
     }
+
+    private double optionalTelemetry(Map<String, Object> body, String field, double min, double max) {
+        Object value = body.get(field);
+        if (value == null) return 0.0;
+        double number = Double.parseDouble(value.toString());
+        if (!Double.isFinite(number) || number < min || number > max) {
+            throw new IllegalArgumentException("Invalid " + field);
+        }
+        return number;
+    }
 }
+
+
+

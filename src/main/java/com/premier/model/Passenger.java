@@ -1,6 +1,7 @@
 package com.premier.model;
 
 import jakarta.persistence.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -56,12 +57,22 @@ public class Passenger {
     @Column(name = "created_by_admin_id")
     private Long createdByAdminId;
 
-    @Column(name = "is_2fa_enabled", columnDefinition = "BIT(1) DEFAULT 0")
+    @Column(name = "is_2fa_enabled", columnDefinition = "boolean default false")
     @Builder.Default
     private Boolean is2FaEnabled = false;
 
     @Column(name = "twofa_secret")
     private String twofaSecret;
+
+    @JsonIgnore
+    @Column(name = "activation_code_hash", length = 255)
+    private String activationCodeHash;
+
+    @Column(name = "activation_expires_at")
+    private LocalDateTime activationExpiresAt;
+
+    @Column(name = "activated_at")
+    private LocalDateTime activatedAt;
 
     @PrePersist
     protected void onCreate() {

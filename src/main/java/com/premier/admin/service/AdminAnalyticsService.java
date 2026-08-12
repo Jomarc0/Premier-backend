@@ -594,3 +594,6 @@ public class AdminAnalyticsService {
 
     private record DateWindow(LocalDateTime start, LocalDateTime end) {}
 }
+
+
+

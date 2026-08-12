@@ -44,6 +44,12 @@ public class SupportEmailService {
     }
 
     public boolean sendTicketDecision(SupportTicket ticket, String subject, String message) {
+        if (ticket.getEmail() == null || ticket.getEmail().isBlank()
+                || ticket.getEmail().trim().toLowerCase().endsWith(".invalid")) {
+            log.info("Support email skipped for ticket {} because the passenger did not provide an email address.",
+                    ticket.getTicketNumber());
+            return false;
+        }
         if (apiKey == null || apiKey.isBlank()) {
             log.warn("Support email skipped for ticket {} because BREVO_API_KEY is not configured.",
                     ticket.getTicketNumber());

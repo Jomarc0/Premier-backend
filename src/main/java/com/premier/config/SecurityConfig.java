@@ -1,9 +1,9 @@
 package com.premier.config;
 
 import com.premier.admin.security.AdminAuthFilter;
-import com.premier.driver.security.DriverJwtAuthFilter;
 import com.premier.security.DeviceAuthFilter;
 import com.premier.security.JwtAuthFilter;
+import com.premier.security.SecurityRateLimitFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.context.annotation.*;
@@ -22,20 +22,20 @@ public class SecurityConfig {
 
     private final JwtAuthFilter       jwtAuthFilter;
     private final AdminAuthFilter     adminAuthFilter;
-    private final DriverJwtAuthFilter driverJwtAuthFilter;
     private final DeviceAuthFilter    deviceAuthFilter;
+    private final SecurityRateLimitFilter securityRateLimitFilter;
 
     @Value("${ALLOWED_ORIGINS:" + AllowedOrigins.DEFAULT + "}")
     private String allowedOrigins;
 
     public SecurityConfig(JwtAuthFilter jwtAuthFilter,
                           AdminAuthFilter adminAuthFilter,
-                          DriverJwtAuthFilter driverJwtAuthFilter,
-                          DeviceAuthFilter deviceAuthFilter) {
+                          DeviceAuthFilter deviceAuthFilter,
+                          SecurityRateLimitFilter securityRateLimitFilter) {
         this.jwtAuthFilter       = jwtAuthFilter;
         this.adminAuthFilter     = adminAuthFilter;
-        this.driverJwtAuthFilter = driverJwtAuthFilter;
         this.deviceAuthFilter    = deviceAuthFilter;
+        this.securityRateLimitFilter = securityRateLimitFilter;
     }
 
     @Bean
@@ -87,13 +87,11 @@ public class SecurityConfig {
                     "/api/passenger/auth/totp/setup",
                     "/api/passenger/chat/message",
                     "/api/passenger/topup/webhook",
-                    "/api/public/support-tickets",
                     // Admin public
                     "/api/admin/auth/login",
-                    // Driver public
-                    "/api/driver/login",
                     // WebSocket
                     "/ws/**",
+                    "/ws-native/**",
                     "/api/auth/**",
                     "/health",
                     "/actuator/health"
@@ -106,7 +104,7 @@ public class SecurityConfig {
                     "/api/rfid/tap",
                     "/api/rfid/qr/process",
                     "/api/rfid/nfc/tap",
-                    "/api/rfid/driver/gps")
+                    "/api/rfid/gps")
                     .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
 
                 .requestMatchers(
@@ -114,24 +112,12 @@ public class SecurityConfig {
                     "/api/rfid/registration/uid-capture")
                     .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL", "DEVICE_GPS_TRACKER")
 
-                .requestMatchers("/api/driver/location", "/api/driver/gps")
-                    .hasAuthority("ROLE_DRIVER")
+                .requestMatchers("/api/staff/**")
+                    .hasAnyAuthority("STAFF", "ADMIN", "SUPER_ADMIN")
 
-                .requestMatchers(
-                    "/api/driver/shift/**",
-                    "/api/driver/tap-in",
-                    "/api/driver/end-shift/**"
-                ).hasAuthority("ROLE_DRIVER")
-
-                .requestMatchers(
-                    "/api/driver/buses",
-                    "/api/driver/vehicles",
-                    "/api/driver/drivers",
-                    "/api/driver/live-locations",
-                    "/api/driver/shift-history/**",
-                    "/api/driver/location-history/**",
-                    "/api/staff/**"
-                ).hasAnyAuthority("STAFF", "ADMIN", "SUPER_ADMIN")
+                // Read-only operational monitoring is available to both terminal staff and admins.
+                .requestMatchers(HttpMethod.GET, "/api/admin/vehicle-monitoring/**")
+                    .hasAnyAuthority("STAFF", "ADMIN", "SUPER_ADMIN")
 
                 //Super Admin only 
                 .requestMatchers(
@@ -153,12 +139,12 @@ public class SecurityConfig {
             )
             .addFilterBefore(deviceAuthFilter,
                 UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(securityRateLimitFilter,
+                DeviceAuthFilter.class)
             .addFilterBefore(adminAuthFilter,
                 UsernamePasswordAuthenticationFilter.class)
-            .addFilterBefore(driverJwtAuthFilter,
-                AdminAuthFilter.class)
             .addFilterBefore(jwtAuthFilter,
-                DriverJwtAuthFilter.class);
+                AdminAuthFilter.class);
 
         return http.build();
     }
