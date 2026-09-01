@@ -2,6 +2,7 @@ package com.premier.driver.repository;
 
 import com.premier.driver.model.*;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.EntityGraph;
 import java.util.List;
 import java.util.Optional;
 import java.time.LocalDateTime;
@@ -23,4 +24,7 @@ public interface DriverShiftRepository
     
     List<DriverShift> findByStatus(
     		ShiftStatus status);
+
+    @EntityGraph(attributePaths = {"vehicle", "driver"})
+    List<DriverShift> findByShiftStartBetween(LocalDateTime start, LocalDateTime end);
 }

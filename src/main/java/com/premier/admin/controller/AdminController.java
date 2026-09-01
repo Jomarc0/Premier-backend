@@ -163,13 +163,35 @@ public class AdminController {
             @RequestParam(required = false) LocalDate startDate,
             @RequestParam(required = false) LocalDate endDate,
             @RequestParam(required = false) String busId,
+            @RequestParam(required = false) String direction,
+            // Kept for older admin clients; direction replaces the route filter.
             @RequestParam(required = false) String routeId,
             @RequestParam(required = false) String paymentMethod,
+            @RequestParam(required = false) String transactionStatus,
             @RequestParam(defaultValue = "Asia/Manila") String timezone) {
         getCurrentAdmin(request);
         return ResponseEntity.ok(ApiResponse.success(
             "Analytics dashboard fetched.",
-            adminAnalyticsService.getDashboard(range, startDate, endDate, busId, routeId, paymentMethod, timezone)));
+            adminAnalyticsService.getDashboard(range, startDate, endDate, busId,
+                direction != null ? direction : routeId, paymentMethod, transactionStatus, timezone)));
+    }
+
+    @GetMapping("/analytics/dashboard/buses/{busId}")
+    public ResponseEntity<?> busAnalyticsDashboard(
+            HttpServletRequest request,
+            @PathVariable String busId,
+            @RequestParam(defaultValue = "last7") String range,
+            @RequestParam(required = false) LocalDate startDate,
+            @RequestParam(required = false) LocalDate endDate,
+            @RequestParam(required = false) String direction,
+            @RequestParam(required = false) String paymentMethod,
+            @RequestParam(required = false) String transactionStatus,
+            @RequestParam(defaultValue = "Asia/Manila") String timezone) {
+        getCurrentAdmin(request);
+        return ResponseEntity.ok(ApiResponse.success(
+            "Bus analytics dashboard fetched.",
+            adminAnalyticsService.getDashboard(range, startDate, endDate, busId,
+                direction, paymentMethod, transactionStatus, timezone)));
     }
 
     //TRANSACTIONS 

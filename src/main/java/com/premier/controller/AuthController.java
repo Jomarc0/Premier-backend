@@ -4,6 +4,7 @@ import com.premier.request.*;
 import com.premier.response.ApiResponse;
 import com.premier.model.Passenger;
 import com.premier.service.AuthService;
+import com.premier.service.BiometricAuthService;
 import com.premier.security.JwtUtil;
 import com.premier.repository.PassengerRepository;
 import jakarta.validation.Valid;
@@ -20,6 +21,7 @@ public class AuthController {
     private final AuthService authService;
     private final JwtUtil jwtUtil;
     private final PassengerRepository passengerRepository;
+    private final BiometricAuthService biometricAuthService;
 
     @PostMapping("/register")
     public ResponseEntity<?> register(
@@ -74,6 +76,36 @@ public class AuthController {
             @Valid @RequestBody TotpVerifyRequest request) {
         return ResponseEntity.ok(
             authService.verifyTotp(request));
+    }
+
+    @PostMapping("/biometric/enroll")
+    public ResponseEntity<?> enrollBiometrics(
+            @AuthenticationPrincipal Passenger passenger,
+            @Valid @RequestBody BiometricDeviceRequest request) {
+        return ResponseEntity.ok(
+            biometricAuthService.enroll(passenger, request.getDeviceId()));
+    }
+
+    @PostMapping("/biometric/refresh")
+    public ResponseEntity<?> refreshBiometricSession(
+            @Valid @RequestBody BiometricTokenRequest request) {
+        return ResponseEntity.ok(
+            biometricAuthService.refresh(request.getRefreshToken(), request.getDeviceId()));
+    }
+
+    @PostMapping("/biometric/revoke")
+    public ResponseEntity<?> revokeBiometricSession(
+            @Valid @RequestBody BiometricTokenRequest request) {
+        return ResponseEntity.ok(
+            biometricAuthService.revoke(request.getRefreshToken(), request.getDeviceId()));
+    }
+
+    @PostMapping("/biometric/revoke-device")
+    public ResponseEntity<?> revokeBiometricDevice(
+            @AuthenticationPrincipal Passenger passenger,
+            @Valid @RequestBody BiometricDeviceRequest request) {
+        return ResponseEntity.ok(
+            biometricAuthService.revokeDevice(passenger, request.getDeviceId()));
     }
 
     @GetMapping("/profile")

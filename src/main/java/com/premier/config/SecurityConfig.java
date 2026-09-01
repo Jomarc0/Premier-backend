@@ -85,6 +85,8 @@ public class SecurityConfig {
                     "/api/passenger/auth/login",
                     "/api/passenger/auth/verify-totp",
                     "/api/passenger/auth/totp/setup",
+                    "/api/passenger/auth/biometric/refresh",
+                    "/api/passenger/auth/biometric/revoke",
                     "/api/passenger/chat/message",
                     "/api/passenger/topup/webhook",
                     // Admin public
