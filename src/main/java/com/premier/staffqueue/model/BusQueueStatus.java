@@ -1,6 +1,7 @@
 package com.premier.staffqueue.model;
 
 public enum BusQueueStatus {
+    GPS_UNKNOWN("GPS unavailable"),
     AT_TERMINAL("At Terminal"),
     DEPARTED("Departed"),
     ON_ROUTE("On Route"),

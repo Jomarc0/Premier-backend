@@ -65,7 +65,7 @@ public class AdminAuthFilter extends OncePerRequestFilter {
             Long adminId = adminJwtUtil.extractAdminId(token);
             Admin admin = adminRepository.findById(adminId).orElse(null);
 
-            if (admin == null) {
+            if (admin == null || !adminJwtUtil.isCurrentSession(token, admin)) {
                 sendUnauthorized(response, "Admin account not found.");
                 return;
             }
@@ -82,6 +82,11 @@ public class AdminAuthFilter extends OncePerRequestFilter {
 
             if (SecurityContextHolder.getContext().getAuthentication() == null) {
                 String authority = admin.getRole().name();
+                if (adminJwtUtil.isEnrollmentToken(token)
+                        || (admin.getRole() != com.premier.admin.model.AdminRole.STAFF
+                        && !Boolean.TRUE.equals(admin.getIs2FaEnabled()))) {
+                    authority = "ADMIN_ENROLL";
+                }
                 var auth = new UsernamePasswordAuthenticationToken(
                         admin,
                         null,
@@ -89,21 +94,27 @@ public class AdminAuthFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext().setAuthentication(auth);
             }
 
-            filterChain.doFilter(request, response);
         } catch (Exception ex) {
-            log.error("AdminAuthFilter failed for {} {}", request.getMethod(), request.getServletPath(), ex);
-            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            String reference = com.premier.security.RequestCorrelationFilter.reference();
+            log.warn("Admin authentication unavailable reference={} type={}", reference, ex.getClass().getSimpleName());
+            response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
             response.setContentType("application/json");
             response.getWriter().write(
-                    "{\"success\":false,\"message\":\"Unable to complete the admin request.\"}");
+                    "{\"success\":false,\"code\":\"SERVICE_UNAVAILABLE\",\"reference\":\"" + reference
+                    + "\",\"message\":\"Authentication is temporarily unavailable.\"}");
+            return;
         }
+        // Downstream failures belong to their own handler, never to authentication.
+        filterChain.doFilter(request, response);
     }
 
     private void sendUnauthorized(HttpServletResponse response,
                                   String message) throws IOException {
+        String reference = com.premier.security.RequestCorrelationFilter.reference();
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json");
         response.getWriter().write(
-                "{\"success\":false,\"message\":\"" + message + "\"}");
+                "{\"success\":false,\"code\":\"AUTHENTICATION_REQUIRED\",\"reference\":\""
+                + reference + "\",\"message\":\"" + message + "\"}");
     }
 }

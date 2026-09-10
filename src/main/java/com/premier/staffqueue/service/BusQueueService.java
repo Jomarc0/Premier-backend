@@ -24,11 +24,11 @@ public class BusQueueService {
 
     private static final String SM_TO_GRAND = "SM Terminal to Grand Terminal";
     private static final String GRAND_TO_SM = "Grand Terminal to SM Terminal";
-    private static final double DEFAULT_SPEED_KMH = 30.0;
     private static final double TERMINAL_GEOFENCE_KM = 5.0;
 
     private final VehicleRepository vehicleRepository;
     private final DriverLocationRepository locationRepository;
+    private final com.premier.device.repository.DeviceRepository deviceRepository;
 
     @Value("${premier.terminals.sm.latitude:13.954781}")
     private double smTerminalLatitude;
@@ -42,9 +42,31 @@ public class BusQueueService {
     @Value("${premier.terminals.grand.longitude:121.062721}")
     private double grandTerminalLongitude;
 
+    @org.springframework.transaction.annotation.Transactional(readOnly=true)
     public BusQueueDashboardResponse getDashboard() {
-        List<QueueCandidate> incomingToSm = buildQueue(GRAND_TO_SM);
-        List<QueueCandidate> incomingToGrand = buildQueue(SM_TO_GRAND);
+        var vehicles = vehicleRepository.findByStatus(com.premier.driver.model.VehicleStatus.ACTIVE);
+        if (vehicles.isEmpty()) return new BusQueueDashboardResponse(LocalDateTime.now(), List.of(), List.of());
+        var locations = locationRepository.findLatestForPlates(vehicles.stream().map(Vehicle::getPlateNumber).toList());
+        var devices = deviceRepository.findByDeviceIdIn(locations.stream().map(DriverLocation::getDeviceId)
+                .filter(java.util.Objects::nonNull).distinct().toList()).stream()
+                .collect(java.util.stream.Collectors.toMap(com.premier.device.model.Device::getDeviceId, d -> d));
+        var trusted = new java.util.HashMap<String, DriverLocation>();
+        var now = java.time.Instant.now();
+        for (var location : locations) {
+            var device = devices.get(location.getDeviceId());
+            if (device != null && device.isActive() && "GPS_VALID".equals(device.getGpsState())
+                    && java.util.Objects.equals(device.getPlateNumber(), location.getPlateNumber())
+                    && location.getCapturedAt() != null && location.getCapturedAt().isAfter(now.minusSeconds(45))
+                    && !location.getCapturedAt().isAfter(now.plusSeconds(10))
+                    && com.premier.device.service.GpsTelemetryService.coordinates(location.getLatitude(), location.getLongitude()))
+                trusted.put(location.getPlateNumber(), location);
+        }
+        var candidates = vehicles.stream().map(vehicle -> {
+            var location = Optional.ofNullable(trusted.get(vehicle.getPlateNumber()));
+            return toCandidate(vehicle, routeForVehicle(vehicle, location), location);
+        }).toList();
+        List<QueueCandidate> incomingToSm = buildQueue(GRAND_TO_SM, candidates);
+        List<QueueCandidate> incomingToGrand = buildQueue(SM_TO_GRAND, candidates);
 
         return new BusQueueDashboardResponse(
                 LocalDateTime.now(),
@@ -53,9 +75,8 @@ public class BusQueueService {
         );
     }
 
-    private List<QueueCandidate> buildQueue(String routeDirection) {
-        return vehicleRepository.findAll().stream()
-                .map(vehicle -> toCandidate(vehicle, routeForVehicle(vehicle)))
+    private List<QueueCandidate> buildQueue(String routeDirection, List<QueueCandidate> candidates) {
+        return candidates.stream()
                 .filter(candidate -> routeDirection.equals(candidate.routeDirection()))
                 .sorted(Comparator
                         .comparing(QueueCandidate::distanceForSort)
@@ -64,9 +85,8 @@ public class BusQueueService {
                 .toList();
     }
 
-    private QueueCandidate toCandidate(Vehicle vehicle, String routeDirection) {
+    private QueueCandidate toCandidate(Vehicle vehicle, String routeDirection, Optional<DriverLocation> latestLocation) {
         String plateNumber = vehicle.getPlateNumber();
-        Optional<DriverLocation> latestLocation = latestLocation(plateNumber);
 
         if (latestLocation.isEmpty()) {
             return new QueueCandidate(
@@ -74,7 +94,7 @@ public class BusQueueService {
                     routeDirection,
                     null,
                     null,
-                    BusQueueStatus.DEPARTED
+                    BusQueueStatus.GPS_UNKNOWN, null
             );
         }
         DriverLocation location = latestLocation.get();
@@ -97,20 +117,20 @@ public class BusQueueService {
                 originLat,
                 originLng
         ));
-        double speedKmh = latestSpeedKmh(plateNumber).orElse(DEFAULT_SPEED_KMH);
-        long etaMinutes = Math.max(1L, Math.round((distanceKm / speedKmh) * 60.0));
+        Double speedKmh = location.getSpeed();
+        Long etaMinutes = speedKmh != null && Double.isFinite(speedKmh) && speedKmh > 0 && speedKmh <= 180
+                ? Math.max(1L, Math.round((distanceKm / speedKmh) * 60.0)) : null;
 
         return new QueueCandidate(
                 plateNumber,
                 routeDirection,
                 distanceKm,
                 etaMinutes,
-                statusFor(distanceKm, originDistanceKm)
+                statusFor(distanceKm, originDistanceKm), location.getCapturedAt()
         );
     }
 
-    private String routeForVehicle(Vehicle vehicle) {
-        Optional<DriverLocation> latestLocation = latestLocation(vehicle.getPlateNumber());
+    private String routeForVehicle(Vehicle vehicle, Optional<DriverLocation> latestLocation) {
         if (latestLocation.isEmpty()) {
             return normalizedRouteOrDefault(vehicle.getRoute());
         }
@@ -144,17 +164,6 @@ public class BusQueueService {
         return distanceToSm <= distanceToGrand ? GRAND_TO_SM : SM_TO_GRAND;
     }
 
-    private Optional<Double> latestSpeedKmh(String plateNumber) {
-        return latestLocation(plateNumber)
-                .map(DriverLocation::getSpeed)
-                .filter(speed -> speed != null && speed > 0);
-    }
-
-    private Optional<DriverLocation> latestLocation(String plateNumber) {
-        return locationRepository.findTopByPlateNumberOrderByRecordedAtDesc(plateNumber)
-                .filter(location -> location.getLatitude() != null && location.getLongitude() != null);
-    }
-
     private List<BusQueueItemResponse> numberQueue(List<QueueCandidate> candidates) {
         AtomicInteger position = new AtomicInteger(1);
         return candidates.stream()
@@ -165,7 +174,7 @@ public class BusQueueService {
                         candidate.etaMinutes(),
                         position.getAndIncrement(),
                         candidate.status(),
-                        candidate.status().getLabel()
+                        candidate.status().getLabel(), candidate.capturedAt()
                 ))
                 .toList();
     }
@@ -233,7 +242,7 @@ public class BusQueueService {
             String routeDirection,
             Double distanceKm,
             Long etaMinutes,
-            BusQueueStatus status
+            BusQueueStatus status, java.time.Instant capturedAt
     ) {
         double distanceForSort() {
             return distanceKm == null ? Double.MAX_VALUE : distanceKm;

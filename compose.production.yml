@@ -1,0 +1,31 @@
+services:
+  backend:
+    # Deploy an approved image digest, for example registry/premier@sha256:...
+    image: ${PREMIER_IMAGE:?Set the approved immutable image digest}
+    init: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 256
+    stop_grace_period: 40s
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Supply through the deployment secret manager; no secret file enters the image.
+    environment:
+      DB_URL: ${DB_URL:?required}
+      DB_USERNAME: ${DB_USERNAME:?required}
+      DB_PASSWORD: ${DB_PASSWORD:?required}
+      JWT_SECRET: ${JWT_SECRET:?required}
+      JWT_ADMIN_SECRET: ${JWT_ADMIN_SECRET:?required}
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?required}
+      PAYMONGO_SECRET_KEY: ${PAYMONGO_SECRET_KEY:?required}
+      PAYMONGO_PUBLIC_KEY: ${PAYMONGO_PUBLIC_KEY:?required}
+      PAYMONGO_WEBHOOK_SECRET: ${PAYMONGO_WEBHOOK_SECRET:?required}
+      AI_EXTERNAL_ENABLED: "false"

@@ -13,11 +13,13 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.util.List;
 
 @Component
+@Slf4j
 public class DeviceAuthFilter extends OncePerRequestFilter {
 
     private final DeviceService deviceService;
@@ -35,6 +37,7 @@ public class DeviceAuthFilter extends OncePerRequestFilter {
 
     private boolean requiresDeviceAuthentication(String path) {
         return path.equals("/api/rfid/tap")
+                || path.equals("/api/rfid/heartbeat")
                 || path.equals("/api/rfid/qr/process")
                 || path.equals("/api/rfid/nfc/tap")
                 || path.equals("/api/rfid/gps")
@@ -48,15 +51,22 @@ public class DeviceAuthFilter extends OncePerRequestFilter {
                                     FilterChain filterChain)
             throws ServletException, IOException {
 
+        DevicePrincipal principal;
         try {
-            DevicePrincipal principal = deviceService.authenticate(
+            principal = deviceService.authenticate(
                     request.getHeader("X-Device-Id"),
                     request.getHeader("X-Device-Token"));
+        } catch (SecurityException rejected) {
+            sendUnauthorized(response);
+            return;
+        } catch (Exception ex) {
+            sendUnavailable(response, ex);
+            return;
+        }
+        try {
             DeviceContext.set(principal);
             setAuthority("DEVICE_" + principal.deviceType().name());
             filterChain.doFilter(request, response);
-        } catch (SecurityException e) {
-            sendUnauthorized(response, e.getMessage());
         } finally {
             DeviceContext.clear();
         }
@@ -72,10 +82,19 @@ public class DeviceAuthFilter extends OncePerRequestFilter {
         }
     }
 
-    private void sendUnauthorized(HttpServletResponse response,
-                                  String message) throws IOException {
+    private void sendUnauthorized(HttpServletResponse response) throws IOException {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json");
-        response.getWriter().write("{\"success\":false,\"message\":\"" + message + "\"}");
+        response.getWriter().write("{\"success\":false,\"code\":\"DEVICE_REJECTED\",\"reference\":\""
+                + RequestCorrelationFilter.reference() + "\",\"message\":\"Device authorization failed.\"}");
+    }
+
+    private void sendUnavailable(HttpServletResponse response, Exception ex) throws IOException {
+        String reference = RequestCorrelationFilter.reference();
+        log.warn("Device authentication unavailable reference={} type={}", reference, ex.getClass().getSimpleName());
+        response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+        response.setContentType("application/json");
+        response.getWriter().write("{\"success\":false,\"code\":\"SERVICE_UNAVAILABLE\",\"reference\":\""
+                + reference + "\",\"message\":\"Authentication is temporarily unavailable.\"}");
     }
 }

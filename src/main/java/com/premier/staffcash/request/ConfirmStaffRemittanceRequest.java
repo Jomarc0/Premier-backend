@@ -10,5 +10,6 @@ import java.time.LocalDate;
 @Data
 public class ConfirmStaffRemittanceRequest {
     @NotNull private LocalDate date;
-    @NotNull @DecimalMin("0.00") private BigDecimal actualCashReceived;
+    @NotNull @DecimalMin("0.00") @jakarta.validation.constraints.Digits(integer = 8, fraction = 2)
+    private BigDecimal actualCashReceived;
 }

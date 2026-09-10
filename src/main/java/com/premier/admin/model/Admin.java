@@ -17,6 +17,12 @@ public class Admin {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @JsonIgnore
+    @lombok.ToString.Exclude
+    @Builder.Default
+    @Column(nullable = false)
+    private long sessionVersion = 0;
+
     @Column(name = "admin_id",
         unique = true, nullable = false, length = 20)
     private String adminId;
@@ -35,6 +41,7 @@ public class Admin {
     private String phoneNumber;
 
     @JsonIgnore
+    @lombok.ToString.Exclude
     @Column(nullable = false, length = 255)
     private String password;
 
@@ -43,6 +50,7 @@ public class Admin {
     private Boolean is2FaEnabled = false;
 
     @JsonIgnore
+    @lombok.ToString.Exclude
     @Column(name = "twofa_secret")
     private String twofaSecret;
 

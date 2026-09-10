@@ -60,9 +60,11 @@ public class FarePaymentService {
     private final FarePaymentAttemptService farePaymentAttemptService;
     private final StaffCashFareService staffCashFareService;
     private final RealtimeEventPublisher realtimeEventPublisher;
+    private final com.premier.payment.service.PaymentIdentity paymentIdentity;
+    private final com.premier.payment.service.PaymentFailureRecorder paymentFailureRecorder;
+    private final com.premier.payment.service.PaymentNotificationService paymentNotifications;
 
     private final SecureRandom secureRandom = new SecureRandom();
-    private final Map<String, LocalDateTime> cooldownMap = new ConcurrentHashMap<>();
 
     @Value("${fare.qr-expiration-seconds:60}")
     private long qrExpirationSeconds;
@@ -70,10 +72,10 @@ public class FarePaymentService {
     @Transactional
     public ApiResponse<FareQrTokenResponse> generateQrToken(Passenger principal) {
         Passenger passenger = passengerRepository.findLockedById(principal.getId())
-                .orElseThrow(() -> new RuntimeException("Passenger not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
 
         if (passenger.getStatus() != PassengerStatus.ACTIVE) {
-            throw new RuntimeException("This RFID card is currently inactive or frozen. Please contact Premier Transport support.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "This RFID card is currently inactive or frozen. Please contact Premier Transport support.");
         }
 
         expireExistingQrTokens(passenger.getId());
@@ -104,10 +106,10 @@ public class FarePaymentService {
     @Transactional
     public ApiResponse<FareQrTokenResponse> generateMobileNfcToken(Passenger principal) {
         Passenger passenger = passengerRepository.findLockedById(principal.getId())
-                .orElseThrow(() -> new RuntimeException("Passenger not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
 
         if (passenger.getStatus() != PassengerStatus.ACTIVE) {
-            throw new RuntimeException("Account is " + passenger.getStatus().name().toLowerCase() + ".");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "Account is inactive.");
         }
 
         expireExistingQrTokens(passenger.getId());
@@ -118,6 +120,7 @@ public class FarePaymentService {
 
         FareQrToken token = FareQrToken.builder()
                 .tokenHash(tokenHash)
+                .purpose("NFC")
                 .passenger(passenger)
                 .status(FareQrTokenStatus.ACTIVE)
                 .expiresAt(expiresAt)
@@ -139,21 +142,22 @@ public class FarePaymentService {
     public ApiResponse<FarePaymentResponse> processQrPayment(String payload, String plateNumber) {
         try {
             String rawToken = normalizeQrPayload(payload);
-            FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                    .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
+            FareQrToken token = lockedToken(sha256(rawToken))
+                    .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_QR", "Invalid QR fare token."));
+            requirePurpose(token, "QR");
 
             if (token.getStatus() == FareQrTokenStatus.USED) {
-                throw new RuntimeException("QR fare token has already been used.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "QR authorization has already been used.");
             }
 
             if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
-                throw new RuntimeException("QR fare token expired. Please generate a new one.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "QR_EXPIRED", "QR fare token expired. Please generate a new one.");
             }
 
             if (token.getExpiresAt().isBefore(nowManila())) {
                 token.setStatus(FareQrTokenStatus.EXPIRED);
                 fareQrTokenRepository.save(token);
-                throw new RuntimeException("QR fare token expired. Please generate a new one.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "QR_EXPIRED", "QR fare token expired. Please generate a new one.");
             }
 
             ApiResponse<FarePaymentResponse> response = processPassengerFare(
@@ -178,11 +182,12 @@ public class FarePaymentService {
     @Transactional
     public ApiResponse<FareQrStatusResponse> getQrTokenStatus(Passenger principal, String payload) {
         String rawToken = normalizeQrPayload(payload);
-        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
+        FareQrToken token = lockedToken(sha256(rawToken))
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_QR", "Invalid QR fare token."));
+            requirePurpose(token, "QR");
 
         if (!token.getPassenger().getId().equals(principal.getId())) {
-            throw new RuntimeException("Invalid QR fare token.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_QR", "Invalid QR fare token.");
         }
 
         if (token.getStatus() == FareQrTokenStatus.ACTIVE && token.getExpiresAt().isBefore(nowManila())) {
@@ -214,22 +219,23 @@ public class FarePaymentService {
         try {
             requireDeviceRequest(request);
             String key = idempotencyKey(request);
-            return findExistingTransaction(request, key)
-                    .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "QR")))
+            return findExistingTransaction(request, key, device, "QR")
+                    .map(tx -> ApiResponse.success("Already processed.", paymentIdentity.response(tx.getResponseSnapshot())))
                     .orElseGet(() -> {
                         validateDevicePaymentRequest(request, device);
                         String rawToken = normalizeQrPayload(request.getPayload());
-                        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                                .orElseThrow(() -> new RuntimeException("Invalid QR fare token."));
+                        FareQrToken token = lockedToken(sha256(rawToken))
+                                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_QR", "Invalid QR fare token."));
+            requirePurpose(token, "QR");
 
                         if (token.getStatus() == FareQrTokenStatus.USED) {
-                            throw new RuntimeException("QR fare token has already been used.");
+                            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "QR authorization has already been used.");
                         }
                         if ((token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila()))
-                                && !offlineQrWasCapturedWhileValid(request, token)) {
+                                ) {
                             token.setStatus(FareQrTokenStatus.EXPIRED);
                             fareQrTokenRepository.save(token);
-                            throw new RuntimeException("QR fare token expired. Please generate a new one.");
+                            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "QR_EXPIRED", "QR fare token expired. Please generate a new one.");
                         }
 
                         ApiResponse<FarePaymentResponse> response = processPassengerFare(
@@ -259,21 +265,22 @@ public class FarePaymentService {
     public ApiResponse<FarePaymentResponse> processMobileNfcTokenPayment(String payload, String plateNumber) {
         try {
             String rawToken = normalizeMobileNfcPayload(payload);
-            FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                    .orElseThrow(() -> new RuntimeException("Invalid mobile NFC fare token."));
+            FareQrToken token = lockedToken(sha256(rawToken))
+                    .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_NFC", "Invalid mobile NFC fare token."));
+            requirePurpose(token, "NFC");
 
             if (token.getStatus() == FareQrTokenStatus.USED) {
-                throw new RuntimeException("Mobile NFC token has already been used.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "NFC authorization has already been used.");
             }
 
             if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
-                throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "NFC_EXPIRED", "Mobile NFC token expired. Please generate a new one.");
             }
 
             if (token.getExpiresAt().isBefore(nowManila())) {
                 token.setStatus(FareQrTokenStatus.EXPIRED);
                 fareQrTokenRepository.save(token);
-                throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "NFC_EXPIRED", "Mobile NFC token expired. Please generate a new one.");
             }
 
             ApiResponse<FarePaymentResponse> response = processPassengerFare(
@@ -301,24 +308,25 @@ public class FarePaymentService {
         try {
             requireDeviceRequest(request);
             String key = idempotencyKey(request);
-            return findExistingTransaction(request, key)
-                    .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "NFC")))
+            return findExistingTransaction(request, key, device, "NFC")
+                    .map(tx -> ApiResponse.success("Already processed.", paymentIdentity.response(tx.getResponseSnapshot())))
                     .orElseGet(() -> {
                         validateDevicePaymentRequest(request, device);
                         String rawToken = normalizeMobileNfcPayload(
                                 request.getMobileNfcToken() != null && !request.getMobileNfcToken().isBlank()
                                         ? request.getMobileNfcToken()
                                         : request.getPayload());
-                        FareQrToken token = fareQrTokenRepository.findByTokenHash(sha256(rawToken))
-                                .orElseThrow(() -> new RuntimeException("Invalid mobile NFC fare token."));
+                        FareQrToken token = lockedToken(sha256(rawToken))
+                                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_NFC", "Invalid mobile NFC fare token."));
+            requirePurpose(token, "NFC");
 
                         if (token.getStatus() == FareQrTokenStatus.USED) {
-                            throw new RuntimeException("Mobile NFC token has already been used.");
+                            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "NFC authorization has already been used.");
                         }
                         if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila())) {
                             token.setStatus(FareQrTokenStatus.EXPIRED);
                             fareQrTokenRepository.save(token);
-                            throw new RuntimeException("Mobile NFC token expired. Please generate a new one.");
+                            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "NFC_EXPIRED", "Mobile NFC token expired. Please generate a new one.");
                         }
 
                         ApiResponse<FarePaymentResponse> response = processPassengerFare(
@@ -347,7 +355,8 @@ public class FarePaymentService {
     @Transactional
     public ApiResponse<FarePaymentResponse> processPassengerNfcPayment(Passenger principal, String plateNumber) {
         try {
-            return processPassengerFare(principal.getId(), null, "NFC", plateNumber, true);
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE,
+                    "USE_TERMINAL", "Present a generated NFC payment token to an authorized terminal.");
         } catch (RuntimeException ex) {
             recordPaymentFailure(PaymentMethod.NFC, principal != null ? principal.getId() : null, null, plateNumber, null, null, ex);
             throw ex;
@@ -358,12 +367,12 @@ public class FarePaymentService {
     public ApiResponse<FarePaymentResponse> processRfidPayment(String rfidUid, String plateNumber) {
         try {
             if (rfidUid == null || rfidUid.trim().isEmpty()) {
-                throw new RuntimeException("RFID UID is required.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "RFID UID is required.");
             }
 
             String normalizedUid = rfidUid.trim().toUpperCase();
             Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
-                    .orElseThrow(() -> new RuntimeException("Card not recognized. Please register your card."));
+                    .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RFID", "Card not recognized. Please register your card."));
 
             return processPassengerFare(passenger.getId(), normalizedUid, "RFID", plateNumber, true);
         } catch (RuntimeException ex) {
@@ -378,19 +387,19 @@ public class FarePaymentService {
         try {
             requireDeviceRequest(request);
             if (request.getRfidUid() == null || request.getRfidUid().trim().isEmpty()) {
-                throw new RuntimeException("RFID UID is required.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "RFID UID is required.");
             }
             if (staffCashFareService.isStaffCashCard(request.getRfidUid())) {
                 return staffCashFareService.process(request, device);
             }
             String key = idempotencyKey(request);
-            return findExistingTransaction(request, key)
-                    .map(tx -> ApiResponse.success("Already processed.", toFarePaymentResponse(tx, "RFID")))
+            return findExistingTransaction(request, key, device, "RFID")
+                    .map(tx -> ApiResponse.success("Already processed.", paymentIdentity.response(tx.getResponseSnapshot())))
                     .orElseGet(() -> {
                         validateDevicePaymentRequest(request, device);
                         String normalizedUid = request.getRfidUid().trim().toUpperCase();
                         Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
-                                .orElseThrow(() -> new RuntimeException("Card not recognized. Please register your card."));
+                                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RFID", "Card not recognized. Please register your card."));
                         return processPassengerFare(passenger.getId(), normalizedUid, "RFID",
                                 request.getPlateNumber(), true, key, device, request);
                     });
@@ -422,25 +431,23 @@ public class FarePaymentService {
             DeviceFareRequest request) {
 
         Passenger passenger = passengerRepository.findLockedById(passengerId)
-                .orElseThrow(() -> new RuntimeException("Passenger not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
 
         if (passenger.getStatus() != PassengerStatus.ACTIVE) {
-            throw new RuntimeException("Account is " + passenger.getStatus().name().toLowerCase() + ".");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "Account is inactive.");
         }
 
-        String cooldownKey = source + ":" + passenger.getId();
-        if (useCooldown) {
-            LocalDateTime lastPayment = cooldownMap.get(cooldownKey);
-            if (lastPayment != null && lastPayment.plusSeconds(COOLDOWN_SECONDS).isAfter(LocalDateTime.now())) {
-                throw new RuntimeException("Payment already processed recently. Please wait a moment.");
-            }
+        if (useCooldown && transactionRepository.existsByPassengerIdAndPaymentMethodAndStatusAndCreatedAtAfter(
+                passenger.getId(), paymentMethod(source), TransactionStatus.SUCCESS, LocalDateTime.now().minusSeconds(COOLDOWN_SECONDS))) {
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT,
+                    "CONFLICT", "Payment already processed recently. Please wait a moment.");
         }
 
         BigDecimal fare = fareFor(passenger);
         String discountType = discountTypeFor(passenger);
 
         if (passenger.getBalance().compareTo(fare) < 0) {
-            throw new RuntimeException("Insufficient balance. Current: PHP " + passenger.getBalance() + ". Please top up.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE", "Insufficient balance. Please top up.");
         }
 
         BigDecimal balanceBefore = passenger.getBalance();
@@ -449,8 +456,11 @@ public class FarePaymentService {
         passengerRepository.save(passenger);
 
         String normalizedPlate = normalizePlate(plateNumber);
-        DriverShift activeShift = activeShiftForPlate(normalizedPlate);
-        String refNumber = source + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
+        LocalDateTime capturedAt = request == null ? null : com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
+        DriverShift activeShift = capturedAt == null ? activeShiftForPlate(normalizedPlate)
+                : driverShiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(normalizedPlate, capturedAt)
+                    .filter(shift -> shift.getShiftEnd() == null || !capturedAt.isAfter(shift.getShiftEnd())).orElse(null);
+        String refNumber = source + "-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
         Transaction tx = Transaction.builder()
@@ -462,8 +472,9 @@ public class FarePaymentService {
                 .balanceAfter(balanceAfter)
                 .referenceNumber(refNumber)
                 .idempotencyKey(idempotencyKey)
+                .requestFingerprint(request != null ? paymentIdentity.fingerprint(request, device, source) : null)
                 .offlineTransactionId(request != null ? clean(request.getOfflineTransactionId()) : null)
-                .offlineCapturedAt(request != null ? parseOptionalRequestTimestamp(request.getOfflineCapturedAt()) : null)
+                .offlineCapturedAt(capturedAt)
                 .deviceId(device != null ? device.deviceId() : null)
                 .paymentMethod(paymentMethod(source))
                 .vehicle(activeShift != null ? activeShift.getVehicle() : null)
@@ -479,19 +490,8 @@ public class FarePaymentService {
         realtimeEventPublisher.adminAndPassenger(passenger.getId(), "FARE_PAID", "TRANSACTION", tx.getId());
         farePaymentAttemptService.recordSuccess(tx, paymentMethod(source), rfidUid, normalizedPlate, request);
 
-        if (passenger.getFcmToken() != null) {
-            firebaseService.sendFareDeduction(
-                    passenger.getFcmToken(),
-                    fare.toString(),
-                    balanceAfter.toString(),
-                    source + (normalizedPlate != null
-                            ? " | " + normalizedPlate
-                            : ""));
-        }
+        paymentNotifications.enqueue(passenger.getId(), refNumber, "FARE");
 
-        if (useCooldown) {
-            cooldownMap.put(cooldownKey, now);
-        }
 
         FarePaymentResponse data = FarePaymentResponse.builder()
                 .cardNumber(mask(passenger.getCardNumber()))
@@ -507,8 +507,9 @@ public class FarePaymentService {
                 .timestamp(now)
                 .build();
 
-        log.info("{} fare payment success [passenger={}, ref={}, {}->{}]",
-                source, passenger.getId(), refNumber, balanceBefore, balanceAfter);
+        tx.setResponseSnapshot(paymentIdentity.snapshot(data));
+        transactionRepository.save(tx);
+        log.info("Fare payment committed intent prepared: method={}, reference={}", source, refNumber);
 
         return ApiResponse.success("Fare deducted successfully!", data);
     }
@@ -533,16 +534,23 @@ public class FarePaymentService {
     private void recordPaymentFailure(PaymentMethod method, Long passengerId, String rfidUid,
                                       String plateNumber, String deviceId, DeviceFareRequest request,
                                       RuntimeException ex) {
-        farePaymentAttemptService.recordFailure(
+        var reason = farePaymentAttemptService.classifyFailure(ex.getMessage());
+        // Keep only safe metadata; never retain a QR/NFC credential or an internal exception message.
+        DeviceFareRequest metadata = new DeviceFareRequest();
+        if (request != null) {
+            metadata.setRequestNonce(request.getRequestNonce());
+            metadata.setRequestTimestamp(request.getRequestTimestamp());
+        }
+        paymentFailureRecorder.afterTransaction(() -> farePaymentAttemptService.recordFailure(
                 method,
                 passengerId,
                 rfidUid,
                 plateNumber,
                 deviceId,
-                request,
+                metadata,
                 null,
-                farePaymentAttemptService.classifyFailure(ex.getMessage()),
-                ex.getMessage());
+                reason,
+                reason.name()));
     }
 
     private void validateDevicePaymentRequest(DeviceFareRequest request, DevicePrincipal device) {
@@ -550,13 +558,13 @@ public class FarePaymentService {
         deviceService.requirePlateAssignment(device, request.getPlateNumber());
         deviceService.validateFreshNonce(device, request.getRequestNonce(), request.getRequestTimestamp());
         if (idempotencyKey(request).length() < 12) {
-            throw new RuntimeException("Request ID is invalid.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request ID is invalid.");
         }
     }
 
     private void requireDeviceRequest(DeviceFareRequest request) {
         if (request == null) {
-            throw new RuntimeException("Payment request is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Payment request is required.");
         }
     }
 
@@ -564,24 +572,39 @@ public class FarePaymentService {
         String key = clean(request.getIdempotencyKey());
         if (key == null) key = clean(request.getRequestId());
         if (key == null) {
-            throw new RuntimeException("Request ID is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request ID is required.");
         }
         return key;
     }
 
-    private java.util.Optional<Transaction> findExistingTransaction(DeviceFareRequest request, String key) {
-        String offlineId = request == null ? null : clean(request.getOfflineTransactionId());
-        if (offlineId != null) {
-            java.util.Optional<Transaction> existing = transactionRepository.findByOfflineTransactionId(offlineId);
-            if (existing.isPresent()) return existing;
-        }
-        return transactionRepository.findByIdempotencyKey(key);
+    private java.util.Optional<Transaction> findExistingTransaction(DeviceFareRequest request, String key,
+                                                                    DevicePrincipal device, String method) {
+        deviceService.lockPaymentDevice(device);
+        deviceService.requirePlateAssignment(device, request.getPlateNumber());
+        if (key.length() < 12 || key.length() > 120) throw paymentIdentity.conflict();
+        paymentIdentity.claim(key, request, device, method);
+        String offlineId = clean(request.getOfflineTransactionId());
+        if (offlineId != null && offlineId.length() > 120) throw paymentIdentity.conflict();
+        var existing = offlineId == null ? java.util.Optional.<Transaction>empty()
+                : transactionRepository.findByOfflineTransactionId(offlineId);
+        if (existing.isEmpty()) existing = transactionRepository.findByIdempotencyKey(key);
+        existing.ifPresent(tx -> {
+            if (!key.equals(tx.getIdempotencyKey())) throw paymentIdentity.conflict();
+            paymentIdentity.verify(tx.getDeviceId(), tx.getRequestFingerprint(), request, device, method);
+        });
+        return existing;
     }
 
-    private boolean offlineQrWasCapturedWhileValid(DeviceFareRequest request, FareQrToken token) {
-        if (request == null || !Boolean.TRUE.equals(request.getOfflineSync())) return false;
-        LocalDateTime capturedAt = parseOptionalRequestTimestamp(request.getOfflineCapturedAt());
-        return capturedAt != null && !capturedAt.isAfter(token.getExpiresAt());
+    private java.util.Optional<FareQrToken> lockedToken(String hash) {
+        // Read only the scalar owner first; never cache token state before acquiring the wallet lock.
+        var owner = fareQrTokenRepository.findPassengerIdByTokenHash(hash);
+        if (owner.isEmpty()) return java.util.Optional.empty();
+        passengerRepository.findLockedById(owner.get()).orElseThrow();
+        return fareQrTokenRepository.findLockedByTokenHash(hash);
+    }
+
+    private void requirePurpose(FareQrToken token, String purpose) {
+        if (!purpose.equals(token.getPurpose())) throw paymentIdentity.conflict();
     }
 
     private LocalDateTime parseOptionalRequestTimestamp(String timestamp) {
@@ -650,7 +673,7 @@ public class FarePaymentService {
 
     private String normalizeQrPayload(String payload) {
         if (payload == null || payload.isBlank()) {
-            throw new RuntimeException("QR fare token is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "QR fare token is required.");
         }
 
         String trimmed = payload.trim();
@@ -659,7 +682,7 @@ public class FarePaymentService {
 
     private String normalizeMobileNfcPayload(String payload) {
         if (payload == null || payload.isBlank()) {
-            throw new RuntimeException("Mobile NFC fare token is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Mobile NFC fare token is required.");
         }
 
         String trimmed = payload.trim();

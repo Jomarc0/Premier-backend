@@ -9,4 +9,5 @@ import java.util.Optional;
 public interface PassengerFcmTokenRepository extends JpaRepository<PassengerFcmToken, Long> {
     Optional<PassengerFcmToken> findByFcmToken(String fcmToken);
     List<PassengerFcmToken> findByPassengerId(Long passengerId);
+    List<PassengerFcmToken> findTop11ByPassengerIdOrderByUpdatedAtDesc(Long passengerId);
 }

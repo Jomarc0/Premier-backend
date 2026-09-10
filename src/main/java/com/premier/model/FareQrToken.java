@@ -17,6 +17,12 @@ public class FareQrToken {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version @Builder.Default
+    private Long version = 0L;
+
+    @Column(nullable = false, length = 8) @Builder.Default
+    private String purpose = "QR";
+
     @Column(name = "token_hash", nullable = false, unique = true, length = 64)
     private String tokenHash;
 

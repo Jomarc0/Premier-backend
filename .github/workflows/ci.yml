@@ -1,62 +1,78 @@
 name: Premier Backend CI
-
 on:
   push:
-    branches: ["main", "master"]
+    branches: [main, master]
   pull_request:
-    branches: ["main", "master"]
   workflow_dispatch:
-
+permissions:
+  contents: read
+concurrency:
+  group: premier-ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   backend:
-    name: Spring Boot Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: premier_test
           POSTGRES_USER: premier
-          POSTGRES_PASSWORD: premier_password
-        ports:
-          - 5432:5432
+          POSTGRES_PASSWORD: ci-synthetic-only
+        ports: [5432:5432]
         options: >-
           --health-cmd "pg_isready -U premier -d premier_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DB_URL: jdbc:postgresql://localhost:5432/premier_test?sslmode=disable
-      DB_USERNAME: premier
-      DB_PASSWORD: premier_password
-      JPA_DDL_AUTO: none
-      SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSL: "false"
-      SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_SSLMODE: disable
-      JWT_SECRET: ci-passenger-secret-at-least-32-bytes
-      JWT_ADMIN_SECRET: ci-admin-secret-at-least-32-bytes
-      PAYMONGO_SECRET_KEY: sk_test_ci_placeholder
-      PAYMONGO_PUBLIC_KEY: pk_test_ci_placeholder
-      PAYMONGO_WEBHOOK_SECRET: ci-webhook-placeholder
-      RFID_TERMINAL_TOKEN: ci-rfid-terminal-placeholder
-      DRIVER_DEVICE_TOKEN: ci-driver-device-placeholder
-      DIALOGFLOW_PROJECT_ID: ci-placeholder
-      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174,http://localhost:5175
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
           cache: maven
-
-      - name: Make Maven wrapper executable
-        run: chmod +x ./mvnw
-
-      - name: Build backend
-        run: ./mvnw -B clean package -DskipTests
-
-      - name: Run backend tests
-        run: ./mvnw -B test
+      - name: PostgreSQL backend tests and build
+        run: |
+          chmod +x mvnw
+          bash tools/ci-backend.sh
+      - name: Audit resolved dependency versions
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress dependency:list -DoutputFile=target/dependencies.txt
+          python3 tools/audit-maven.py
+      - name: Build non-root runtime image
+        run: docker build --pull --tag premier:${{ github.sha }} .
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: premier:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: false
+      - name: Save release image identity
+        run: docker image inspect premier:${{ github.sha }} --format '{{.Id}}' > target/container-image-id.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: backend-verification-${{ github.sha }}
+          retention-days: 14
+          path: |
+            target/surefire-reports/
+            target/maven-vulnerabilities.json
+            target/dependencies.txt
+            target/container-image-id.txt
+            target/premier-*.jar
+            ci-postgresql.log
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}

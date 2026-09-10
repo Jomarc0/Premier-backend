@@ -12,6 +12,8 @@ import java.util.Optional;
 
 @Repository  
 public interface DriverLocationRepository extends JpaRepository<DriverLocation, Long> {
+    @Query("select dl from DriverLocation dl where dl.plateNumber in :plates and dl.id = (select max(other.id) from DriverLocation other where other.plateNumber = dl.plateNumber)")
+    List<DriverLocation> findLatestForPlates(@Param("plates") java.util.Collection<String> plates);
     
     // ALL THESE METHODS WORK PERFECTLY
     Optional<DriverLocation> findTopByPlateNumberOrderByRecordedAtDesc(String plateNumber);
@@ -53,7 +55,7 @@ public interface DriverLocationRepository extends JpaRepository<DriverLocation, 
     List<DriverLocation> findLatestValidPerPlate();
 
     List<DriverLocation> findByPlateNumberAndRecordedAtBetweenOrderByRecordedAtAsc(
-            String plateNumber, LocalDateTime start, LocalDateTime end);
+            String plateNumber, LocalDateTime start, LocalDateTime end, org.springframework.data.domain.Pageable page);
     
     @Query("""
         SELECT dl FROM DriverLocation dl

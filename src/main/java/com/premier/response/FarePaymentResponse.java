@@ -9,6 +9,8 @@ import java.time.LocalDateTime;
 
 @Data
 @Builder
+@lombok.NoArgsConstructor
+@lombok.AllArgsConstructor
 public class FarePaymentResponse {
     private String cardNumber;
     private String rfidUid;

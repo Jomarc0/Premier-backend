@@ -120,8 +120,8 @@ public class BiometricAuthService {
     }
 
     private void requireActivePassenger(Passenger passenger) {
-        if (passenger == null || (passenger.getStatus() != PassengerStatus.ACTIVE
-                && passenger.getStatus() != PassengerStatus.AVAILABLE)) {
+        if (passenger == null || passenger.getStatus() != PassengerStatus.ACTIVE
+                || !Boolean.TRUE.equals(passenger.getIs2FaEnabled())) {
             throw invalidToken();
         }
     }

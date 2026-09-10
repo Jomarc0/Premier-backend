@@ -10,6 +10,10 @@ import java.util.List;
 import java.util.Optional;
 
 public interface StaffCashCardRepository extends JpaRepository<StaffCashCard, Long> {
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from StaffCashCard c where c.id = :id")
+    Optional<StaffCashCard> findLockedById(@Param("id") Long id);
+
     Optional<StaffCashCard> findByRfidUid(String rfidUid);
 
     @Query(value = """

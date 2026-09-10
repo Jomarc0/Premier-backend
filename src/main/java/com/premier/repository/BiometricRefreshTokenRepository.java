@@ -13,6 +13,10 @@ import java.util.Optional;
 
 public interface BiometricRefreshTokenRepository extends JpaRepository<BiometricRefreshToken, Long> {
 
+    @Modifying
+    @Query("update BiometricRefreshToken t set t.revokedAt = :now where t.passenger.id = :id and t.revokedAt is null")
+    int revokeAllForPassenger(@Param("id") Long id, @Param("now") Instant now);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select t from BiometricRefreshToken t join fetch t.passenger where t.tokenHash = :tokenHash")
     Optional<BiometricRefreshToken> findLockedByTokenHash(@Param("tokenHash") String tokenHash);

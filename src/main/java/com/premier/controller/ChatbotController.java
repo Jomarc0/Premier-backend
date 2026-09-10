@@ -33,21 +33,6 @@ public class ChatbotController {
     private final GeminiService geminiService;
     private final PremierBotKnowledgeService premierBotKnowledgeService;
 
-    // In-memory per-user rate limiting: 20 msg/min
-    private final Map<String, Bucket> buckets =
-        new ConcurrentHashMap<>();
-
-    private Bucket resolveBucket(String userId) {
-        return buckets.computeIfAbsent(userId, k ->
-            Bucket.builder()
-                .addLimit(Bandwidth.builder()
-                    .capacity(20)
-                    .refillGreedy(20, Duration.ofMinutes(1))
-                    .build())
-                .build()
-        );
-    }
-
     @PostMapping("/message")
     public ResponseEntity<ChatResponse> handleMessage(
             @Valid @RequestBody ChatRequest request,
@@ -57,19 +42,6 @@ public class ChatbotController {
         String userId = (passenger != null)
             ? String.valueOf(passenger.getId())
             : httpRequest.getRemoteAddr();
-
-        Bucket bucket = resolveBucket(userId);
-        if (!bucket.tryConsume(1)) {
-            log.warn("Rate limit exceeded: {}", userId);
-            return ResponseEntity
-                .status(HttpStatus.TOO_MANY_REQUESTS)
-                .body(ChatResponse.builder()
-                    .success(false)
-                    .reply("You're sending messages too quickly. " +
-                           "Please wait before trying again.")
-                    .errorCode("RATE_LIMITED")
-                    .build());
-        }
 
         String sanitized = sanitize(request.getMessage());
         if (sanitized.isBlank()) {
@@ -81,7 +53,7 @@ public class ChatbotController {
                     .build());
         }
 
-        log.info("Chat request received for {} ({} characters).", userId, sanitized.length());
+        log.debug("Chat request received ({} characters).", sanitized.length());
 
         // Dialogflow is the primary conversation router. The backend only supplies
         // authoritative data/actions after an intent has been identified.
@@ -96,6 +68,15 @@ public class ChatbotController {
                     .intent("LOST_CARD_REPORT")
                     .reply("Opening the secure lost-card report. Review the warning, enter your email for updates, then confirm only if you want to freeze this card.")
                     .recommendedAction("REPORT_LOST_CARD")
+                    .build());
+        }
+        if (isExplicitMfaRecovery(sanitized)) {
+            return ResponseEntity.ok(ChatResponse.builder()
+                    .success(true)
+                    .intent("MFA_RECOVERY_REQUEST")
+                    .reply("To recover your authenticator, a Super Admin must verify your identity under the organization's approved procedure. Please submit a support ticket with your card number, contact email, and a brief reason. The Super Admin will verify your identity before authorizing recovery.")
+                    .recommendedAction("OPEN_SUPPORT_TICKET_FORM")
+                    .quickReplies(List.of("Open ticket", "Cancel"))
                     .build());
         }
         if (isExplicitTicketCreation(sanitized)) {
@@ -218,6 +199,14 @@ public class ChatbotController {
         return text.equals("report lost card") || text.equals("report a lost card")
                 || text.equals("freeze my card") || text.equals("freeze card")
                 || text.equals("block my card");
+    }
+
+    private boolean isExplicitMfaRecovery(String message) {
+        String text = message == null ? "" : message.toLowerCase().trim();
+        return text.contains("lost authenticator") || text.contains("lost 2fa")
+                || text.contains("lost totp") || text.contains("lost google authenticator")
+                || text.contains("recover authenticator") || text.contains("recover 2fa")
+                || text.contains("recover totp");
     }
 
     private boolean isHumanSupportRequest(ChatResponse response, String message) {

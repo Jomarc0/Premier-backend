@@ -2,6 +2,7 @@ package com.premier.config;
 
 import com.premier.admin.security.AdminAuthFilter;
 import com.premier.security.DeviceAuthFilter;
+import com.premier.driver.security.DriverAuthFilter;
 import com.premier.security.JwtAuthFilter;
 import com.premier.security.SecurityRateLimitFilter;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,7 +24,9 @@ public class SecurityConfig {
     private final JwtAuthFilter       jwtAuthFilter;
     private final AdminAuthFilter     adminAuthFilter;
     private final DeviceAuthFilter    deviceAuthFilter;
+    private final DriverAuthFilter    driverAuthFilter;
     private final SecurityRateLimitFilter securityRateLimitFilter;
+    private final com.premier.security.AuthenticatedRateLimitFilter authenticatedRateLimitFilter;
 
     @Value("${ALLOWED_ORIGINS:" + AllowedOrigins.DEFAULT + "}")
     private String allowedOrigins;
@@ -31,11 +34,15 @@ public class SecurityConfig {
     public SecurityConfig(JwtAuthFilter jwtAuthFilter,
                           AdminAuthFilter adminAuthFilter,
                           DeviceAuthFilter deviceAuthFilter,
-                          SecurityRateLimitFilter securityRateLimitFilter) {
+                          DriverAuthFilter driverAuthFilter,
+                          SecurityRateLimitFilter securityRateLimitFilter,
+                          com.premier.security.AuthenticatedRateLimitFilter authenticatedRateLimitFilter) {
         this.jwtAuthFilter       = jwtAuthFilter;
         this.adminAuthFilter     = adminAuthFilter;
         this.deviceAuthFilter    = deviceAuthFilter;
+        this.driverAuthFilter    = driverAuthFilter;
         this.securityRateLimitFilter = securityRateLimitFilter;
+        this.authenticatedRateLimitFilter = authenticatedRateLimitFilter;
     }
 
     @Bean
@@ -75,6 +82,11 @@ public class SecurityConfig {
             .sessionManagement(session -> session
                 .sessionCreationPolicy(
                     SessionCreationPolicy.STATELESS))
+            .exceptionHandling(errors -> errors.authenticationEntryPoint((request, response, failure) -> {
+                response.setStatus(401);
+                response.setContentType("application/json");
+                response.getWriter().write("{\"success\":false,\"code\":\"UNAUTHORIZED\",\"message\":\"Authentication required.\"}");
+            }))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
@@ -82,6 +94,7 @@ public class SecurityConfig {
                 .requestMatchers(
                     // Passenger public
                     "/api/passenger/auth/register",
+                    "/api/passenger/auth/recovery/complete",
                     "/api/passenger/auth/login",
                     "/api/passenger/auth/verify-totp",
                     "/api/passenger/auth/totp/setup",
@@ -91,12 +104,14 @@ public class SecurityConfig {
                     "/api/passenger/topup/webhook",
                     // Admin public
                     "/api/admin/auth/login",
+                    // Driver public
+                    "/api/driver/login",
                     // WebSocket
                     "/ws/**",
                     "/ws-native/**",
                     "/api/auth/**",
                     "/health",
-                    "/actuator/health"
+                    "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness"
                 ).permitAll()
 
                 .requestMatchers(HttpMethod.GET, "/api/rfid/vehicles")
@@ -106,7 +121,7 @@ public class SecurityConfig {
                     "/api/rfid/tap",
                     "/api/rfid/qr/process",
                     "/api/rfid/nfc/tap",
-                    "/api/rfid/gps")
+                    "/api/rfid/gps", "/api/rfid/heartbeat")
                     .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
 
                 .requestMatchers(
@@ -121,7 +136,12 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/admin/vehicle-monitoring/**")
                     .hasAnyAuthority("STAFF", "ADMIN", "SUPER_ADMIN")
 
+                .requestMatchers("/api/driver/**")
+                    .hasAuthority("DRIVER")
+
                 //Super Admin only 
+                .requestMatchers("/api/admin/auth/totp/setup", "/api/admin/auth/totp/verify")
+                    .hasAnyAuthority("ADMIN_ENROLL", "ADMIN", "SUPER_ADMIN")
                 .requestMatchers(
                     "/api/admin/logs",
                     "/api/admin/logs/**",
@@ -133,17 +153,21 @@ public class SecurityConfig {
                 ).hasAuthority("SUPER_ADMIN")
 
                 // General admin
+                .requestMatchers(HttpMethod.POST, "/api/admin/transactions/*/reverse-fare").hasAuthority("SUPER_ADMIN")
                 .requestMatchers("/api/admin/**")
                     .hasAnyAuthority("ADMIN", "SUPER_ADMIN")
 
                 //Everything else requires auth 
                 .anyRequest().authenticated()
             )
+            .addFilterAfter(authenticatedRateLimitFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(deviceAuthFilter,
                 UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(securityRateLimitFilter,
                 DeviceAuthFilter.class)
             .addFilterBefore(adminAuthFilter,
+                UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(driverAuthFilter,
                 UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(jwtAuthFilter,
                 AdminAuthFilter.class);
@@ -170,3 +194,4 @@ public class SecurityConfig {
         return AllowedOrigins.parse(origins);
     }
 }
+

@@ -10,10 +10,15 @@ import org.springframework.stereotype.Component;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import com.premier.model.Passenger;
+import com.premier.repository.PassengerRepository;
+import lombok.RequiredArgsConstructor;
 
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class JwtUtil {
+    private final PassengerRepository passengerRepository;
 
     @Value("${jwt.secret}")
     private String secret;
@@ -30,7 +35,26 @@ public class JwtUtil {
     }
 
     public String generateFullToken(Long passengerId) {
-        return buildToken(passengerId, expiration, "FULL");
+        Passenger passenger = passengerRepository.findById(passengerId).orElseThrow();
+        return Jwts.builder().subject(String.valueOf(passengerId)).claim("type", "FULL")
+                .claim("sv", passenger.getSessionVersion()).id(java.util.UUID.randomUUID().toString())
+                .issuedAt(new Date()).expiration(new Date(System.currentTimeMillis() + expiration))
+                .signWith(getSigningKey()).compact();
+    }
+
+    public String generateChallenge(Long passengerId, String purpose, String challengeId, java.time.Instant expiresAt) {
+        return Jwts.builder().subject(String.valueOf(passengerId)).claim("type", purpose)
+                .id(challengeId).issuedAt(new Date()).expiration(Date.from(expiresAt))
+                .signWith(getSigningKey()).compact();
+    }
+
+    public String challengeId(String token) { return getClaims(token).getId(); }
+
+    public boolean isCurrentSession(String token, Passenger passenger) {
+        if (!isFullToken(token) || passenger == null || passenger.getStatus() != com.premier.model.PassengerStatus.ACTIVE
+                || !Boolean.TRUE.equals(passenger.getIs2FaEnabled())) return false;
+        Number version = getClaims(token).get("sv", Number.class);
+        return (version == null ? 0L : version.longValue()) == passenger.getSessionVersion();
     }
 
     public String generateTempToken(Long passengerId) {
@@ -70,14 +94,13 @@ public class JwtUtil {
             getClaims(token);
             return true;
         } catch (io.jsonwebtoken.ExpiredJwtException e) {
-            log.warn("JWT expired: {}", e.getMessage());
+            log.debug("Expired JWT rejected");
             return false;
         } catch (io.jsonwebtoken.JwtException e) {
-            log.warn("JWT invalid: {}", e.getMessage());
+            log.debug("Invalid JWT rejected");
             return false;
         } catch (Exception e) {
-            log.error("Unexpected JWT error: {}",
-                e.getMessage());
+            log.debug("JWT could not be validated");
             return false;
         }
     }

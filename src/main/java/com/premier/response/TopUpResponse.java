@@ -13,4 +13,5 @@ public class TopUpResponse {
     private String checkoutUrl;
     private String referenceNumber;
     private String status;
+    private java.time.LocalDateTime expiresAt;
 }

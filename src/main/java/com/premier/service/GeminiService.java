@@ -23,11 +23,14 @@ public class GeminiService {
     @Value("${gemini.api-key:}")
     private String apiKey;
 
+    @Value("${ai.external-enabled:false}")
+    private boolean externalEnabled;
+
     @Value("${gemini.model:gemini-1.5-flash}")
     private String model;
 
     public String enhanceSupportReply(String userMessage, String safeContextReply) {
-        if (apiKey == null || apiKey.isBlank()) {
+        if (!externalEnabled || apiKey == null || apiKey.isBlank()) {
             return safeContextReply;
         }
 
@@ -54,15 +57,16 @@ public class GeminiService {
 
                 Safe system context:
                 %s
-                """.formatted(limit(userMessage, 500), limit(safeContextReply, 800));
+                """.formatted(AiPrivacy.topic(userMessage), limit(safeContextReply, 800));
 
         try {
-            String url = "https://generativelanguage.googleapis.com/v1beta/models/" + model
-                    + ":generateContent?key=" + apiKey;
+            if (model == null || !model.matches("[a-zA-Z0-9._-]{1,80}")) return safeContextReply;
+            String url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent";
 
             Map<String, Object> body = Map.of("contents", List.of(Map.of("parts", List.of(Map.of("text", prompt)))));
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("x-goog-api-key",apiKey);
 
             ResponseEntity<String> response = restTemplate.postForEntity(
                     url,
@@ -75,7 +79,7 @@ public class GeminiService {
                 return text.asText().trim();
             }
         } catch (Exception ex) {
-            log.warn("Gemini enhancement skipped: {}", ex.getMessage());
+            log.warn("Gemini enhancement unavailable: {}", ex.getClass().getSimpleName());
         }
 
         return safeContextReply;

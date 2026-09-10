@@ -30,9 +30,22 @@ public class DeviceService {
     private final PasswordEncoder passwordEncoder;
     private final SecureRandom secureRandom = new SecureRandom();
 
+    /** Device -> wallet -> fare token is the payment lock order across all instances. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void lockPaymentDevice(DevicePrincipal principal) {
+        if (principal == null) throw new SecurityException("Device authentication required.");
+        Device current = deviceRepository.findLockedById(principal.id()).orElseThrow(() -> new SecurityException("Invalid device credentials."));
+        if (!current.isActive() || !current.getDeviceId().equals(principal.deviceId())
+                || current.getCredentialVersion() != principal.credentialVersion()
+                || !java.util.Objects.equals(current.getPlateNumber(), principal.plateNumber())
+                || !java.util.Objects.equals(current.getVehicleId(), principal.vehicleId())) {
+            throw new SecurityException("Device is inactive or revoked.");
+        }
+    }
+
     @Transactional
     public DevicePrincipal authenticate(String deviceId, String rawToken) {
-        if (isBlank(deviceId) || isBlank(rawToken)) {
+        if (isBlank(deviceId) || isBlank(rawToken) || deviceId.length() > 80 || rawToken.length() > 512) {
             throw new SecurityException("Device authentication required.");
         }
 
@@ -47,14 +60,14 @@ public class DeviceService {
             throw new SecurityException("Invalid device credentials.");
         }
 
-        device.setLastSeenAt(LocalDateTime.now());
-        deviceRepository.save(device);
+        LocalDateTime now = LocalDateTime.now();
+        deviceRepository.touchLastSeen(device.getId(), now, now.minusSeconds(30));
         return DevicePrincipal.from(device);
     }
 
     @Transactional
     public void validateFreshNonce(DevicePrincipal principal, String nonce, String timestamp) {
-        if (principal == null || isBlank(nonce) || isBlank(timestamp)) {
+        if (principal == null || isBlank(nonce) || isBlank(timestamp) || nonce.length() > 120 || timestamp.length() > 64) {
             throw new SecurityException("Device nonce and timestamp are required.");
         }
 
@@ -108,7 +121,7 @@ public class DeviceService {
     @Transactional
     public ApiResponse<DeviceProvisioningResponse> registerDevice(AdminDeviceRequest request) {
         if (deviceRepository.existsByDeviceId(request.getDeviceId().trim())) {
-            throw new RuntimeException("Device ID already exists.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Device ID already exists.");
         }
         String rawToken = generateToken();
         String assignedPlate = resolveAssignedPlate(request.getVehicleId(), request.getPlateNumber());
@@ -129,8 +142,8 @@ public class DeviceService {
 
     @Transactional
     public ApiResponse<DeviceProvisioningResponse> assignDevice(Long id, AdminDeviceRequest request) {
-        Device device = deviceRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Device not found."));
+        Device device = deviceRepository.findLockedById(id)
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Device not found."));
         if (!isBlank(request.getDeviceName())) device.setDeviceName(request.getDeviceName().trim());
         if (request.getDeviceType() != null) device.setDeviceType(request.getDeviceType());
         device.setVehicleId(request.getVehicleId());
@@ -142,10 +155,11 @@ public class DeviceService {
 
     @Transactional
     public ApiResponse<DeviceProvisioningResponse> rotateToken(Long id) {
-        Device device = deviceRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Device not found."));
+        Device device = deviceRepository.findLockedById(id)
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Device not found."));
         String rawToken = generateToken();
         device.setTokenHash(passwordEncoder.encode(rawToken));
+        device.setCredentialVersion(device.getCredentialVersion() + 1);
         device.setStatus(DeviceStatus.ACTIVE);
         device.setRevokedAt(null);
         deviceRepository.save(device);
@@ -156,8 +170,8 @@ public class DeviceService {
 
     @Transactional
     public ApiResponse<DeviceProvisioningResponse> deactivate(Long id) {
-        Device device = deviceRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Device not found."));
+        Device device = deviceRepository.findLockedById(id)
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Device not found."));
         device.setStatus(DeviceStatus.INACTIVE);
         deviceRepository.save(device);
         return ApiResponse.success("Device deactivated.", toResponse(device));
@@ -165,8 +179,8 @@ public class DeviceService {
 
     @Transactional
     public ApiResponse<DeviceProvisioningResponse> revoke(Long id) {
-        Device device = deviceRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Device not found."));
+        Device device = deviceRepository.findLockedById(id)
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Device not found."));
         device.setStatus(DeviceStatus.REVOKED);
         device.setRevokedAt(LocalDateTime.now());
         deviceRepository.save(device);
@@ -202,7 +216,7 @@ public class DeviceService {
             return normalizePlate(fallbackPlateNumber);
         }
         Vehicle vehicle = vehicleRepository.findById(vehicleId)
-                .orElseThrow(() -> new RuntimeException("Vehicle not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Vehicle not found."));
         return normalizePlate(vehicle.getPlateNumber());
     }
 

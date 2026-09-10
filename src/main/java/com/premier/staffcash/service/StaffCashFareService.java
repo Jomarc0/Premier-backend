@@ -30,12 +30,14 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class StaffCashFareService {
+    private final com.premier.service.RfidUidRegistrationService uidRegistrations;
     private final StaffCashCardRepository cardRepository;
     private final StaffCashTransactionRepository transactionRepository;
     private final AdminRepository adminRepository;
     private final PassengerRepository passengerRepository;
     private final DriverShiftRepository shiftRepository;
     private final DeviceService deviceService;
+    private final com.premier.payment.service.PaymentIdentity paymentIdentity;
 
     @Value("${fare.fixed-amount:60.00}")
     private BigDecimal regularFare;
@@ -51,41 +53,46 @@ public class StaffCashFareService {
     public ApiResponse<FarePaymentResponse> process(DeviceFareRequest request, DevicePrincipal device) {
         String uid = normalizeUid(request != null ? request.getRfidUid() : null);
         StaffCashCard card = findCard(uid)
-                .orElseThrow(() -> new RuntimeException("Staff cash card not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Staff cash card not found."));
+        deviceService.lockPaymentDevice(device);
+        adminRepository.findLockedById(card.getStaff().getId()).orElseThrow();
+        card = cardRepository.findLockedById(card.getId()).orElseThrow();
         if (card.getStatus() != StaffCashCardStatus.ACTIVE) {
-            throw new RuntimeException("Staff cash card is " + card.getStatus().name().toLowerCase() + ".");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "CARD_INACTIVE", "Staff cash card is inactive.");
         }
         Admin staff = card.getStaff();
         if (!Boolean.TRUE.equals(staff.getActive()) || staff.getRole() != AdminRole.STAFF) {
-            throw new RuntimeException("Assigned staff account is inactive.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "Assigned staff account is inactive.");
         }
+        deviceService.requirePlateAssignment(device, request.getPlateNumber());
         String key = idempotencyKey(request);
+        paymentIdentity.claim(key, request, device, "CASH");
         String offlineId = clean(request.getOfflineTransactionId());
         if (offlineId != null) {
             var existing = transactionRepository.findByOfflineTransactionId(offlineId);
             if (existing.isPresent()) {
-                return ApiResponse.success("Offline cash fare already synchronized.", toDeviceResponse(existing.get()));
+                return ApiResponse.success("Offline cash fare already synchronized.", replay(existing.get(), request, device));
             }
         }
+        StaffCashCard currentCard = card;
         return transactionRepository.findByIdempotencyKey(key)
-                .map(tx -> ApiResponse.success("Cash fare already recorded.", toDeviceResponse(tx)))
-                .orElseGet(() -> createTransaction(request, device, card, key));
+                .map(tx -> ApiResponse.success("Cash fare already recorded.", replay(tx, request, device)))
+                .orElseGet(() -> createTransaction(request, device, currentCard, key));
     }
 
     private ApiResponse<FarePaymentResponse> createTransaction(DeviceFareRequest request, DevicePrincipal device,
                                                                 StaffCashCard card, String key) {
-        if (device == null) throw new RuntimeException("Device authentication required.");
+        if (device == null) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Device authentication required.");
         deviceService.requirePlateAssignment(device, request.getPlateNumber());
         deviceService.validateFreshNonce(device, request.getRequestNonce(), request.getRequestTimestamp());
 
         String plate = normalizePlate(request.getPlateNumber());
-        LocalDateTime offlineCapturedAt = parseTimestamp(request.getOfflineCapturedAt());
-        DriverShift shift = shiftRepository.findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE)
-                .or(() -> offlineCapturedAt == null ? java.util.Optional.empty()
-                        : shiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(
-                                plate, offlineCapturedAt)
-                                .filter(row -> row.getShiftEnd() == null || !offlineCapturedAt.isAfter(row.getShiftEnd())))
-                .orElseThrow(() -> new RuntimeException("Vehicle has no matching driver shift for this fare."));
+        LocalDateTime offlineCapturedAt = com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
+        DriverShift shift = (offlineCapturedAt == null
+                ? shiftRepository.findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE)
+                : shiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(plate, offlineCapturedAt)
+                    .filter(row -> row.getShiftEnd() == null || !offlineCapturedAt.isAfter(row.getShiftEnd())))
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "RECONCILIATION_REQUIRED", "Vehicle has no matching driver shift for this fare."));
 
         BigDecimal discount = card.getPurpose() == StaffCashCardPurpose.DISCOUNTED_CASH
                 ? regularFare.multiply(discountRate)
@@ -103,8 +110,9 @@ public class StaffCashFareService {
                 .baseFare(regularFare)
                 .discountAmount(discount)
                 .finalFare(finalFare)
-                .referenceNumber("CASH-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase())
+                .referenceNumber("CASH-" + UUID.randomUUID().toString().replace("-", "").toUpperCase())
                 .idempotencyKey(key)
+                .requestFingerprint(paymentIdentity.fingerprint(request, device, "CASH"))
                 .offlineTransactionId(clean(request.getOfflineTransactionId()))
                 .offlineCapturedAt(offlineCapturedAt)
                 .routeSnapshot(route)
@@ -112,22 +120,25 @@ public class StaffCashFareService {
                 .requestTimestamp(parseTimestamp(request.getRequestTimestamp()))
                 .build();
         transactionRepository.save(tx);
-        return ApiResponse.success("Cash fare recorded.", toDeviceResponse(tx));
+        FarePaymentResponse response = toDeviceResponse(tx);
+        tx.setResponseSnapshot(paymentIdentity.snapshot(response));
+        transactionRepository.save(tx);
+        return ApiResponse.success("Cash fare recorded.", response);
     }
 
     @Transactional
     public ApiResponse<StaffCashCardResponse> register(Admin registeredBy, RegisterStaffCashCardRequest request) {
-        Admin staff = adminRepository.findById(request.getStaffId())
-                .orElseThrow(() -> new RuntimeException("Staff account not found."));
-        if (staff.getRole() != AdminRole.STAFF) throw new RuntimeException("Selected account is not a staff account.");
+        Admin staff = adminRepository.findLockedById(request.getStaffId())
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Staff account not found."));
+        if (staff.getRole() != AdminRole.STAFF) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Selected account is not a staff account.");
         String uid = normalizeUid(request.getRfidUid());
-        if (uid.length() < 4) throw new RuntimeException("Invalid RFID UID.");
+        if (uid.length() < 4) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Invalid RFID UID.");
         if (passengerRepository.existsByRfidUid(uid)) {
-            throw new RuntimeException("This RFID UID is already registered to a passenger.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "UID_RESERVED", "This RFID UID is already registered to a passenger.");
         }
         findCard(uid).ifPresent(existing -> {
             if (!existing.getStaff().getId().equals(staff.getId()) || existing.getPurpose() != request.getPurpose()) {
-                throw new RuntimeException("This RFID UID is already registered as another staff cash card.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "UID_RESERVED", "This RFID UID is already registered as another staff cash card.");
             }
         });
 
@@ -139,7 +150,9 @@ public class StaffCashFareService {
         card.setStatus(StaffCashCardStatus.ACTIVE);
         card.setRegisteredBy(registeredBy);
         card.setRegisteredAt(LocalDateTime.now());
-        return ApiResponse.success("Staff cash card registered.", toCardResponse(cardRepository.save(card)));
+        StaffCashCard saved = cardRepository.saveAndFlush(card);
+        uidRegistrations.claim(uid, "CASH", saved.getId());
+        return ApiResponse.success("Staff cash card registered.", toCardResponse(saved));
     }
 
     @Transactional(readOnly = true)
@@ -151,7 +164,9 @@ public class StaffCashFareService {
     @Transactional
     public ApiResponse<StaffCashCardResponse> changeStatus(Long id, StaffCashCardStatus status) {
         StaffCashCard card = cardRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Staff cash card not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Staff cash card not found."));
+        adminRepository.findLockedById(card.getStaff().getId()).orElseThrow();
+        card = cardRepository.findLockedById(id).orElseThrow();
         card.setStatus(status);
         return ApiResponse.success("Staff cash card status updated.", toCardResponse(cardRepository.save(card)));
     }
@@ -170,6 +185,12 @@ public class StaffCashFareService {
                 .date(date).regularCount(regular).discountedCount(discounted)
                 .totalPassengers(rows.size()).expectedCash(expected)
                 .transactions(rows.stream().map(this::toItem).toList()).build());
+    }
+
+    private FarePaymentResponse replay(StaffCashTransaction tx, DeviceFareRequest request, DevicePrincipal device) {
+        if (!idempotencyKey(request).equals(tx.getIdempotencyKey())) throw paymentIdentity.conflict();
+        paymentIdentity.verify(tx.getDeviceId(), tx.getRequestFingerprint(), request, device, "CASH");
+        return paymentIdentity.response(tx.getResponseSnapshot());
     }
 
     private FarePaymentResponse toDeviceResponse(StaffCashTransaction tx) {
@@ -194,10 +215,10 @@ public class StaffCashFareService {
     }
 
     private String idempotencyKey(DeviceFareRequest request) {
-        if (request == null) throw new RuntimeException("Payment request is required.");
+        if (request == null) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Payment request is required.");
         String key = clean(request.getIdempotencyKey());
         if (key == null) key = clean(request.getRequestId());
-        if (key == null || key.length() < 12) throw new RuntimeException("Request ID is invalid.");
+        if (key == null || key.length() < 12 || key.length() > 120) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request ID is invalid.");
         return key;
     }
 

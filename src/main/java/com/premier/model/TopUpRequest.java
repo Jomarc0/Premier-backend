@@ -37,7 +37,7 @@ public class TopUpRequest {
     @Column(name = "reference_number")
     private String referenceNumber;
 
-    @Enumerated(EnumType.STRING)
+@Enumerated(EnumType.STRING)
     @Column(length = 50) 
     @Builder.Default
     private TransactionStatus status = TransactionStatus.PENDING;
@@ -46,6 +46,12 @@ public class TopUpRequest {
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
+    @Column(name = "expires_at")
+    private LocalDateTime expiresAt;
+    @Column(precision = 10, scale = 2)
+    private BigDecimal settledBalance;
+    @Column(length = 50)
+    private String lastSafeError;
 
     @PrePersist
     protected void onCreate() {

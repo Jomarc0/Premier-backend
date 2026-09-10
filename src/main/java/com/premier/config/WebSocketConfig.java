@@ -26,13 +26,10 @@ public class WebSocketConfig
     @Value("${ALLOWED_ORIGINS:" + AllowedOrigins.DEFAULT + "}")
     private String allowedOrigins;
 
-    private final JwtUtil jwtUtil;
-    private final AdminJwtUtil adminJwtUtil;
+    private final com.premier.security.RealtimeAuthorization authorization;
 
-    public WebSocketConfig(JwtUtil jwtUtil,
-                           AdminJwtUtil adminJwtUtil) {
-        this.jwtUtil = jwtUtil;
-        this.adminJwtUtil = adminJwtUtil;
+    public WebSocketConfig(com.premier.security.RealtimeAuthorization authorization) {
+        this.authorization = authorization;
     }
 
     @Override
@@ -59,80 +56,24 @@ public class WebSocketConfig
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
         registration.interceptors(new ChannelInterceptor() {
-            @Override
-            public Message<?> preSend(Message<?> message, MessageChannel channel) {
-                StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
-                if (accessor == null || accessor.getCommand() == null) {
-                    return message;
-                }
-
-                if (StompCommand.CONNECT.equals(accessor.getCommand())) {
-                    String token = bearerToken(accessor.getFirstNativeHeader("Authorization"));
-                    if (token == null) {
-                        throw new SecurityException("WebSocket authentication required.");
-                    }
-                    accessor.setUser(authenticationFor(token));
-                    return message;
-                }
-
-                if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
-                    authorizeSubscription(accessor);
-                }
-
-                return message;
+            @Override public Message<?> preSend(Message<?> message, MessageChannel channel) {
+                return authorization.inbound(message);
             }
         });
     }
 
-    private UsernamePasswordAuthenticationToken authenticationFor(String token) {
-        if (adminJwtUtil.isAdminToken(token) && adminJwtUtil.isTokenValid(token)) {
-            String role = adminJwtUtil.extractRole(token);
-            return new UsernamePasswordAuthenticationToken(
-                    adminJwtUtil.extractAdminId(token),
-                    null,
-                    List.of(new SimpleGrantedAuthority(role)));
-        }
-        if (jwtUtil.isFullToken(token)) {
-            return new UsernamePasswordAuthenticationToken(
-                    jwtUtil.extractPassengerId(token),
-                    null,
-                    List.of(new SimpleGrantedAuthority("ROLE_PASSENGER")));
-        }
-        throw new SecurityException("Invalid WebSocket token.");
+    @Override
+    public void configureClientOutboundChannel(ChannelRegistration registration) {
+        registration.interceptors(new ChannelInterceptor() {
+            @Override public Message<?> preSend(Message<?> message, MessageChannel channel) {
+                return authorization.outbound(message);
+            }
+        });
     }
 
-    private void authorizeSubscription(StompHeaderAccessor accessor) {
-        if (!(accessor.getUser() instanceof UsernamePasswordAuthenticationToken auth)) {
-            throw new SecurityException("WebSocket authentication required.");
-        }
-        String destination = accessor.getDestination();
-        if (destination == null) {
-            return;
-        }
-        boolean admin = auth.getAuthorities().stream().anyMatch(a ->
-                a.getAuthority().equals("ADMIN")
-                        || a.getAuthority().equals("SUPER_ADMIN"));
-        boolean staffOrAdmin = admin || auth.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("STAFF"));
-        if (destination.startsWith("/topic/admin/") && !admin) {
-            throw new SecurityException("Not allowed to subscribe to admin real-time events.");
-        }
-        if (destination.startsWith("/topic/bus-locations") && !staffOrAdmin) {
-            throw new SecurityException("Not allowed to subscribe to bus locations.");
-        }
-        if (destination.startsWith("/topic/staff/") && !staffOrAdmin) {
-            throw new SecurityException("Not allowed to subscribe to staff real-time events.");
-        }
-        if (destination.startsWith("/user/") && auth.getAuthorities().stream()
-                .noneMatch(a -> a.getAuthority().equals("ROLE_PASSENGER"))) {
-            throw new SecurityException("Not allowed to subscribe to passenger real-time events.");
-        }
-    }
-
-    private String bearerToken(String authorization) {
-        if (authorization == null || !authorization.startsWith("Bearer ")) {
-            return null;
-        }
-        return authorization.substring(7);
+    @Override
+    public void configureWebSocketTransport(WebSocketTransportRegistration registration) {
+        registration.setMessageSizeLimit(8192).setSendBufferSizeLimit(65536).setSendTimeLimit(10000)
+                .setTimeToFirstMessage(10000);
     }
 }

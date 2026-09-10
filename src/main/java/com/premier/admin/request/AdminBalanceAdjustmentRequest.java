@@ -11,6 +11,7 @@ public class AdminBalanceAdjustmentRequest {
     @NotNull(message = "Amount is required.")
     @DecimalMin(value = "1.00", message = "Amount must be at least 1.00.")
     @DecimalMax(value = "10000.00", message = "Amount must not exceed 10000.00.")
+    @jakarta.validation.constraints.Digits(integer = 5, fraction = 2)
     private BigDecimal amount;
 
     @NotBlank(message = "Adjustment reason is required.")

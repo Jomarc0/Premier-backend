@@ -21,7 +21,7 @@ public class LocationRequest {
     @DecimalMax(value = "180.0",  message = "Invalid longitude")
     private Double longitude;
 
-    private Double speed   = 0.0;
-    private Double heading = 0.0;
+    private Double speed;
+    private Double heading;
     private Long   shiftId;
 }

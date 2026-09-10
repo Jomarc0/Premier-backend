@@ -1,9 +1,10 @@
 package com.premier.controller;
 
-import com.premier.request.TopUpRequestDto;
 import com.premier.model.Passenger;
+import com.premier.request.TopUpRequestDto;
 import com.premier.response.ApiResponse;
 import com.premier.service.PayMongoService;
+import com.premier.service.TopUpExpirationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -17,6 +18,14 @@ import org.springframework.web.bind.annotation.*;
 public class TopUpController {
 
     private final PayMongoService payMongoService;
+    private final TopUpExpirationService expirationService;
+
+    @GetMapping("/pending")
+    public ResponseEntity<?> pending(@AuthenticationPrincipal Passenger passenger,
+                                     @RequestParam(defaultValue = "0") int page) {
+        if (passenger == null) return unauthorizedPassenger();
+        return ResponseEntity.ok(payMongoService.pendingTopUps(passenger, page));
+    }
 
     //Initiate top-up — creates PayMongo link
     @PostMapping("/initiate")
@@ -27,8 +36,12 @@ public class TopUpController {
             return unauthorizedPassenger();
         }
 
-        return ResponseEntity.ok(
-                payMongoService.initiateTopUp(passenger, request));
+        // First, check if the passenger has any pending top-ups that have already expired
+        // If so, expire them to allow a new top-up
+        expirationService.expireIfPendingAndExpired(passenger.getId());
+
+        var result = payMongoService.initiateTopUp(passenger, request);
+        return ResponseEntity.status(result.isSuccess() ? HttpStatus.OK : HttpStatus.ACCEPTED).body(result);
     }
 
     // Called after passenger completes payment

@@ -102,7 +102,7 @@ class BiometricAuthServiceTest {
     }
 
     private Passenger passenger() {
-        return Passenger.builder().id(10L).status(PassengerStatus.ACTIVE).build();
+        return Passenger.builder().id(10L).status(PassengerStatus.ACTIVE).is2FaEnabled(true).build();
     }
 
     private String hash(String token) {

@@ -71,6 +71,12 @@ public class StaffCashTransaction {
     @Column(name = "idempotency_key", nullable = false, length = 120)
     private String idempotencyKey;
 
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(length = 64)
+    private String requestFingerprint;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(columnDefinition = "text")
+    private String responseSnapshot;
+
     @Column(name = "offline_transaction_id", length = 120)
     private String offlineTransactionId;
 

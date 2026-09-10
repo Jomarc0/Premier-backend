@@ -32,9 +32,12 @@ public class DialogflowService {
 
     private SessionsClient sessionsClient;
 
+    @Value("${ai.external-enabled:false}")
+    private boolean externalEnabled;
+
     @PostConstruct
     public void init() {
-        if (projectId == null || projectId.isBlank() || credentialsPath == null || credentialsPath.isBlank()) {
+        if (!externalEnabled || projectId == null || projectId.isBlank() || credentialsPath == null || credentialsPath.isBlank()) {
             log.info("Dialogflow is disabled because project ID or credentials are not configured.");
             return;
         }
@@ -55,7 +58,7 @@ public class DialogflowService {
             log.info("Dialogflow initialized. Project: {}", projectId);
 
         } catch (Exception e) {
-            log.error("Dialogflow init failed: {}", e.getMessage(), e);
+            log.warn("Dialogflow initialization unavailable: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -70,19 +73,17 @@ public class DialogflowService {
 
     public ChatResponse detectIntent(String userMessage, String sessionId) {
         if (sessionsClient == null) {
-            return fallbackResponse("Our AI support is temporarily unavailable. Please call Premier support at (02) 8888-171.");
+            return fallbackResponse("Our AI support is temporarily unavailable. Please use the support ticket form.");
         }
 
         // Use provided sessionId or generate a new one
-        String resolvedSession = (sessionId != null && !sessionId.isBlank())
-                ? sessionId
-                : UUID.randomUUID().toString();
+        String resolvedSession = UUID.randomUUID().toString();
 
         try {
             SessionName session = SessionName.of(projectId, resolvedSession);
 
             TextInput textInput = TextInput.newBuilder()
-                    .setText(userMessage)
+                    .setText(AiPrivacy.topic(userMessage))
                     .setLanguageCode(languageCode)
                     .build();
 
@@ -90,7 +91,11 @@ public class DialogflowService {
                     .setText(textInput)
                     .build();
 
-            DetectIntentResponse response = sessionsClient.detectIntent(session, queryInput);
+            var call = sessionsClient.detectIntentCallable().futureCall(DetectIntentRequest.newBuilder()
+                    .setSession(session.toString()).setQueryInput(queryInput).build());
+            DetectIntentResponse response;
+            try { response=call.get(10,java.util.concurrent.TimeUnit.SECONDS); }
+            finally { if(!call.isDone()) call.cancel(true); }
             QueryResult result = response.getQueryResult();
 
             String replyText = result.getFulfillmentText();
@@ -113,7 +118,7 @@ public class DialogflowService {
                             }
                         }
                     } catch (Exception e) {
-                        log.warn("Could not parse quick replies from payload: {}", e.getMessage());
+                        log.debug("Invalid quick replies ignored.");
                     }
                 }
             }
@@ -123,7 +128,7 @@ public class DialogflowService {
 
             // Fallback if empty response
             if (replyText == null || replyText.isBlank()) {
-                replyText = "I'm not sure how to help with that. Please contact Premier support at (02) 8888-171.";
+                replyText = "I'm not sure how to help with that. Please use the support ticket form.";
             }
 
             return ChatResponse.builder()
@@ -134,9 +139,9 @@ public class DialogflowService {
                     .build();
 
         } catch (Exception e) {
-            log.error("Dialogflow detectIntent failed: {}", e.getMessage(), e);
+            log.warn("Dialogflow routing unavailable: {}", e.getClass().getSimpleName());
             return fallbackResponse(
-                    "Our support bot encountered an issue. Please try again or contact Premier support at (02) 8888-171."
+                    "Our support bot encountered an issue. Please try again or use the support ticket form."
             );
         }
     }
@@ -148,4 +153,6 @@ public class DialogflowService {
                 .errorCode("DIALOGFLOW_ERROR")
                 .build();
     }
+    @jakarta.annotation.PreDestroy
+    void close() { if(sessionsClient!=null)sessionsClient.close(); }
 }

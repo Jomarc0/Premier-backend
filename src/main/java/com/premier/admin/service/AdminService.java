@@ -41,6 +41,7 @@ public class AdminService {
     private final DriverRepository       driverRepository;
     private final VehicleRepository      vehicleRepository;
     private final RealtimeEventPublisher  realtimeEventPublisher;
+    private final com.premier.service.RfidUidRegistrationService uidRegistrations;
 
     public AdminService(
             AdminRepository adminRepository,
@@ -53,7 +54,7 @@ public class AdminService {
             TotpSecretCrypto totpSecretCrypto,
             DriverRepository driverRepository,
             VehicleRepository vehicleRepository,
-            RealtimeEventPublisher realtimeEventPublisher) {
+            RealtimeEventPublisher realtimeEventPublisher, com.premier.service.RfidUidRegistrationService uidRegistrations) {
         this.adminRepository       = adminRepository;
         this.adminJwtUtil          = adminJwtUtil;
         this.passwordEncoder       = passwordEncoder;
@@ -65,9 +66,11 @@ public class AdminService {
         this.driverRepository      = driverRepository;
         this.vehicleRepository     = vehicleRepository;
         this.realtimeEventPublisher = realtimeEventPublisher;
+        this.uidRegistrations = uidRegistrations;
     }
 
     // AUTH
+    @Transactional(noRollbackFor = com.premier.exception.ClientException.class)
     public ApiResponse<Map<String, Object>> login(
             String username,
             String password,
@@ -75,17 +78,15 @@ public class AdminService {
             String ipAddress) {
 
         Admin admin = adminRepository
-            .findByUsername(username)
+            .findLockedByUsername(username)
             .orElseThrow(() ->
-                new RuntimeException("Invalid credentials."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid credentials."));
 
         if (admin.isLocked())
-            throw new RuntimeException(
-                "Account is locked. Try again later.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, "ACCOUNT_LOCKED", "Account is locked. Try again later.");
 
         if (!admin.getActive())
-            throw new RuntimeException(
-                "Account is disabled.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "Account is disabled.");
 
         if (!passwordEncoder.matches(
                 password, admin.getPassword())) {
@@ -98,7 +99,7 @@ public class AdminService {
                     username, admin.getLoginAttempts());
             }
             adminRepository.save(admin);
-            throw new RuntimeException("Invalid credentials.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid credentials.");
         }
 
         if (!AdminRole.STAFF.equals(admin.getRole()) &&
@@ -116,8 +117,10 @@ public class AdminService {
             if (admin.getTwofaSecret() == null ||
                 !totpService.verifyCode(
                     totpSecretCrypto.decrypt(admin.getTwofaSecret()), totpCode.trim())) {
-                throw new RuntimeException(
-                    "Invalid Google Authenticator code.");
+                admin.setLoginAttempts(admin.getLoginAttempts() + 1);
+                if (admin.getLoginAttempts() >= 3) admin.setLockedUntil(LocalDateTime.now().plusMinutes(30));
+                adminRepository.save(admin);
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid authenticator code.");
             }
         }
 
@@ -145,7 +148,12 @@ public class AdminService {
         return ApiResponse.success("Login successful.", data);
     }
 
-    public ApiResponse<TotpSetupResponse> getAdminTotpSetup(Admin admin) {
+    @Transactional
+    public ApiResponse<TotpSetupResponse> getAdminTotpSetup(Admin principal) {
+        Admin admin = adminRepository.findLockedByUsername(principal.getUsername()).orElseThrow();
+        if (Boolean.TRUE.equals(admin.getIs2FaEnabled())) {
+            return ApiResponse.success("Authenticator is already enabled.", TotpSetupResponse.builder().is2FaEnabled(true).build());
+        }
         if (admin.getTwofaSecret() == null ||
             admin.getTwofaSecret().isBlank()) {
             admin.setTwofaSecret(totpSecretCrypto.encrypt(totpService.generateSecret()));
@@ -162,28 +170,38 @@ public class AdminService {
                 .secret(null)
                 .manualEntryKey(totpSecret)
                 .qrCodeUrl(qrCodeUrl)
+                .qrImageDataUri(totpService.generateQrImageDataUri(totpSecret, admin.getUsername()))
                 .is2FaEnabled(Boolean.TRUE.equals(
                     admin.getIs2FaEnabled()))
                 .build());
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = com.premier.exception.ClientException.class)
     public ApiResponse<Map<String, Object>> verifyAdminTotp(
-            Admin admin,
+            Admin principal,
             String code) {
+        Admin admin = adminRepository.findLockedByUsername(principal.getUsername()).orElseThrow();
+        if (Boolean.TRUE.equals(admin.getIs2FaEnabled()) || admin.isLocked()) {
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Enrollment is not available.");
+        }
         if (admin.getTwofaSecret() == null ||
             admin.getTwofaSecret().isBlank()) {
-            admin.setTwofaSecret(totpService.generateSecret());
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Begin enrollment before verifying a code.");
         }
 
         if (code == null || code.isBlank() ||
             !totpService.verifyCode(
                 totpSecretCrypto.decrypt(admin.getTwofaSecret()), code.trim())) {
-            throw new RuntimeException(
-                "Invalid Google Authenticator code.");
+            admin.setLoginAttempts(admin.getLoginAttempts() + 1);
+            if (admin.getLoginAttempts() >= 3) admin.setLockedUntil(LocalDateTime.now().plusMinutes(30));
+            adminRepository.save(admin);
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid authenticator code.");
         }
 
         admin.setIs2FaEnabled(true);
+        admin.setLoginAttempts(0);
+        admin.setLockedUntil(null);
+        admin.setSessionVersion(admin.getSessionVersion() + 1);
         adminRepository.save(admin);
 
         logActivity(admin, "ENABLE_ADMIN_2FA",
@@ -193,6 +211,7 @@ public class AdminService {
 
         Map<String, Object> result = new HashMap<>();
         result.put("twoFactorEnabled", true);
+        result.put("token", adminJwtUtil.generateAdminToken(admin.getId(), admin.getRole().name()));
         result.put("username", admin.getUsername());
 
         return ApiResponse.success(
@@ -255,16 +274,17 @@ public class AdminService {
             Admin admin, Long transactionId) {
 
         Transaction tx = transactionRepository
-            .findById(transactionId)
+            .findLockedById(transactionId)
             .orElseThrow(() ->
-                new RuntimeException(
-                    "Transaction not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Transaction not found."));
 
         if (tx.getStatus() != TransactionStatus.PENDING)
-            throw new RuntimeException(
-                "Transaction is not pending.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Transaction is not pending.");
 
-        Passenger passenger = tx.getPassenger();
+        if (tx.getType() != TransactionType.TOPUP) {
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Only pending top-up records can be approved.");
+        }
+        Passenger passenger = passengerRepository.findLockedById(tx.getPassenger().getId()).orElseThrow();
         BigDecimal before = passenger.getBalance();
         BigDecimal after  = before.add(tx.getAmount());
 
@@ -296,14 +316,12 @@ public class AdminService {
             Admin admin, Long transactionId) {
 
         Transaction tx = transactionRepository
-            .findById(transactionId)
+            .findLockedById(transactionId)
             .orElseThrow(() ->
-                new RuntimeException(
-                    "Transaction not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Transaction not found."));
 
         if (tx.getStatus() != TransactionStatus.PENDING)
-            throw new RuntimeException(
-                "Transaction is not pending.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Transaction is not pending.");
 
         tx.setStatus(TransactionStatus.FAILED);
         transactionRepository.save(tx);
@@ -335,25 +353,25 @@ public class AdminService {
             BigDecimal amount, String reason,
             String ipAddress) {
 
+        amount = com.premier.payment.service.Money.exact(amount);
         if (amount == null
                 || amount.compareTo(new BigDecimal("1.00")) < 0
                 || amount.compareTo(new BigDecimal("10000.00")) > 0) {
-            throw new RuntimeException("Amount must be between 1.00 and 10000.00.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Amount must be between 1.00 and 10000.00.");
         }
 
         if (reason == null || reason.trim().isEmpty()) {
-            throw new RuntimeException("Adjustment reason is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Adjustment reason is required.");
         }
 
         if (amount.compareTo(new BigDecimal("5000.00")) >= 0 && !admin.isSuperAdmin()) {
-            throw new RuntimeException("Super Admin approval is required for adjustments of 5000.00 or more.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "FORBIDDEN", "Super Admin approval is required for adjustments of 5000.00 or more.");
         }
 
         Passenger passenger = passengerRepository
-            .findById(passengerId)
+            .findLockedById(passengerId)
             .orElseThrow(() ->
-                new RuntimeException(
-                    "Passenger not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
 
         BigDecimal oldBalance = passenger.getBalance();
         BigDecimal newBalance = oldBalance.add(amount);
@@ -378,7 +396,7 @@ public class AdminService {
             ipAddress != null ? ipAddress : "unknown");
         tx.setReferenceNumber("ADMIN-" +
             UUID.randomUUID().toString()
-                .substring(0, 8).toUpperCase());
+                .replace("-", "").toUpperCase());
         transactionRepository.save(tx);
         realtimeEventPublisher.adminAndPassenger(passengerId, "BALANCE_UPDATED", "PASSENGER", passengerId);
         realtimeEventPublisher.adminAndPassenger(passengerId, "TRANSACTION_CREATED", "TRANSACTION", tx.getId());
@@ -427,10 +445,9 @@ public class AdminService {
             String message) {
 
         Passenger passenger = passengerRepository
-            .findById(passengerId)
+            .findLockedById(passengerId)
             .orElseThrow(() ->
-                new RuntimeException(
-                    "Passenger not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
 
         PassengerStatus oldStatus = passenger.getStatus();
         passenger.setStatus(status);
@@ -463,11 +480,9 @@ public class AdminService {
         PassengerCardCategory cardCategory = parseCardCategory(category);
 
         if (passengerRepository.existsByRfidUid(normalizedUid))
-            throw new RuntimeException(
-                "RFID UID already registered.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "RFID UID already registered.");
 
         String cardNumber = generateUniqueCardNumber();
-        String activationCode = generateActivationCode();
 
         Passenger passenger = Passenger.builder()
                 .cardNumber(cardNumber)
@@ -478,12 +493,16 @@ public class AdminService {
                 .createdByAdminId(admin != null ? admin.getId() : null)
                 .is2FaEnabled(false)
                 .status(PassengerStatus.AVAILABLE)
-                .activationCodeHash(passwordEncoder.encode(activationCode))
-                .activationExpiresAt(LocalDateTime.now().plusDays(7))
                 .build();
 
         Passenger saved =
             passengerRepository.save(passenger);
+        uidRegistrations.claim(normalizedUid, "PASSENGER", saved.getId());
+        transactionRepository.save(Transaction.builder().passenger(saved).type(TransactionType.ADMIN_ADJUSTMENT)
+                .status(TransactionStatus.SUCCESS).amount(Passenger.INITIAL_CARD_BALANCE)
+                .balanceBefore(BigDecimal.ZERO).balanceAfter(Passenger.INITIAL_CARD_BALANCE)
+                .referenceNumber("ISSUE-" + UUID.randomUUID().toString().replace("-", "").toUpperCase())
+                .description("Opening balance on card issuance").build());
         realtimeEventPublisher.admin("PASSENGER_CREATED", "PASSENGER", saved.getId());
 
         logActivity(admin, "CREATE_RFID_CARD",
@@ -492,21 +511,52 @@ public class AdminService {
             " | Type: " + cardCategory,
             "localhost");
 
-        return ApiResponse.success("RFID card created successfully. Deliver the activation code only to the card holder.",
+        return ApiResponse.success("RFID card created successfully. Passenger can set up an authenticator using the card number.",
                 CardIssuanceResponse.builder()
-                        .passengerId(saved.getId()).cardNumber(saved.getCardNumber()).status(saved.getStatus())
-                        .activationCode(activationCode).activationExpiresAt(saved.getActivationExpiresAt()).build());
+                        .passengerId(saved.getId()).cardNumber(saved.getCardNumber()).status(saved.getStatus()).build());
+    }
+
+    /** An operator correction adds a linked ledger entry; the original fare is never edited. */
+    @Transactional
+    public ApiResponse<Map<String, Object>> reverseFare(Admin admin, Long transactionId, String reason) {
+        if (admin == null || !admin.isSuperAdmin() || !Boolean.TRUE.equals(admin.getActive())
+                || !Boolean.TRUE.equals(admin.getIs2FaEnabled()) || admin.isLocked()) {
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "FORBIDDEN", "Super Admin authorization is required.");
+        }
+        if (reason == null || reason.trim().length() < 10 || reason.trim().length() > 240) {
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_REQUEST", "Provide a correction reason of 10 to 240 characters.");
+        }
+        Transaction original = transactionRepository.findLockedById(transactionId).orElseThrow(() ->
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Transaction not found."));
+        if (original.getStatus() != TransactionStatus.SUCCESS || original.getType() != TransactionType.FARE_DEDUCTION) {
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Only successful wallet fares can be reversed here.");
+        }
+        var existing = transactionRepository.findByReversalOfId(transactionId);
+        if (existing.isPresent()) return ApiResponse.success("Fare already reversed.", Map.of("referenceNumber", existing.get().getReferenceNumber(), "originalTransactionId", transactionId));
+        Passenger passenger = passengerRepository.findLockedById(original.getPassenger().getId()).orElseThrow();
+        BigDecimal before = passenger.getBalance();
+        BigDecimal amount = com.premier.payment.service.Money.exact(original.getAmount());
+        BigDecimal after = before.add(amount);
+        passenger.setBalance(after);
+        Transaction reversal = Transaction.builder().passenger(passenger).type(TransactionType.REFUND).status(TransactionStatus.SUCCESS)
+                .amount(amount).balanceBefore(before).balanceAfter(after).paymentMethod(PaymentMethod.ADMIN)
+                .reversalOfId(transactionId).referenceNumber("REV-" + UUID.randomUUID().toString().replace("-", "").toUpperCase())
+                .description("Fare correction for " + original.getReferenceNumber()).build();
+        transactionRepository.saveAndFlush(reversal);
+        logActivity(admin, "REVERSE_FARE", "TRANSACTION", transactionId, "Linked reversal " + reversal.getReferenceNumber() + " | " + reason.trim(), "unknown");
+        realtimeEventPublisher.adminAndPassenger(passenger.getId(), "FARE_REVERSED", "TRANSACTION", reversal.getId());
+        return ApiResponse.success("Fare reversed.", Map.of("referenceNumber", reversal.getReferenceNumber(), "originalTransactionId", transactionId));
     }
 
     private String normalizeRfidUid(String rfidUid) {
         if (rfidUid == null || rfidUid.isBlank()) {
-            throw new RuntimeException("RFID UID is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "RFID UID is required.");
         }
         String normalized = rfidUid.trim()
                 .replaceAll("[^A-Fa-f0-9]", "")
                 .toUpperCase();
         if (normalized.length() < 4) {
-            throw new RuntimeException("RFID UID is invalid.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "RFID UID is invalid.");
         }
         return normalized;
     }
@@ -516,7 +566,7 @@ public class AdminService {
             return PassengerCardCategory.valueOf(
                 category == null ? "REGULAR" : category.trim().toUpperCase());
         } catch (IllegalArgumentException ex) {
-            throw new RuntimeException("Invalid card category.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Invalid card category.");
         }
     }
 
@@ -531,11 +581,6 @@ public class AdminService {
         throw new RuntimeException("Unable to generate unique card number.");
     }
 
-    private String generateActivationCode() {
-        byte[] bytes = new byte[24];
-        CARD_NUMBER_RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-    }
 
     // DRIVER MANAGEMENT
     @Transactional
@@ -551,8 +596,7 @@ public class AdminService {
             licenseNumber, "License number").toUpperCase();
 
         if (driverRepository.existsByLicenseNumber(normalizedLicense))
-            throw new RuntimeException(
-                "License number already registered.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "License number already registered.");
 
         if (!totpSecretCrypto.isEncrypted(admin.getTwofaSecret())) {
             admin.setTwofaSecret(totpSecretCrypto.encrypt(admin.getTwofaSecret()));
@@ -590,7 +634,7 @@ public class AdminService {
 
         Driver driver = driverRepository.findById(driverId)
             .orElseThrow(() ->
-                new RuntimeException("Driver not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Driver not found."));
 
         if (licenseNumber != null && !licenseNumber.isBlank()) {
             String normalizedLicense =
@@ -599,8 +643,7 @@ public class AdminService {
                 .filter(existing ->
                     !existing.getId().equals(driverId))
                 .ifPresent(existing -> {
-                    throw new RuntimeException(
-                        "License number already registered.");
+                    throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "License number already registered.");
                 });
             driver.setLicenseNumber(normalizedLicense);
         }
@@ -631,7 +674,7 @@ public class AdminService {
 
         Driver driver = driverRepository.findById(driverId)
             .orElseThrow(() ->
-                new RuntimeException("Driver not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Driver not found."));
 
         driverRepository.delete(driver);
         realtimeEventPublisher.admin("DRIVER_DELETED", "DRIVER", driverId);
@@ -658,8 +701,7 @@ public class AdminService {
             plateNumber, "Plate number").toUpperCase();
 
         if (vehicleRepository.existsByPlateNumber(normalizedPlate))
-            throw new RuntimeException(
-                "Plate number already registered.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Plate number already registered.");
 
         Vehicle vehicle = Vehicle.builder()
             .plateNumber(normalizedPlate)
@@ -692,7 +734,7 @@ public class AdminService {
 
         Vehicle vehicle = vehicleRepository.findById(vehicleId)
             .orElseThrow(() ->
-                new RuntimeException("Vehicle not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Vehicle not found."));
 
         if (plateNumber != null && !plateNumber.isBlank()) {
             String normalizedPlate =
@@ -701,8 +743,7 @@ public class AdminService {
                 .filter(existing ->
                     !existing.getId().equals(vehicleId))
                 .ifPresent(existing -> {
-                    throw new RuntimeException(
-                        "Plate number already registered.");
+                    throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Plate number already registered.");
                 });
             vehicle.setPlateNumber(normalizedPlate);
         }
@@ -734,7 +775,7 @@ public class AdminService {
 
         Vehicle vehicle = vehicleRepository.findById(vehicleId)
             .orElseThrow(() ->
-                new RuntimeException("Vehicle not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Vehicle not found."));
 
         vehicleRepository.delete(vehicle);
         realtimeEventPublisher.admin("VEHICLE_DELETED", "VEHICLE", vehicleId);
@@ -763,12 +804,10 @@ public class AdminService {
             String phoneNumber, AdminRole role) {
 
         if (!requestingAdmin.isSuperAdmin())
-            throw new RuntimeException(
-                "Only Super Admin can create admins.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "FORBIDDEN", "Only Super Admin can create admins.");
 
         if (adminRepository.existsByUsername(username))
-            throw new RuntimeException(
-                "Username already exists.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Username already exists.");
 
         String adminId = "ADM-" + String.format(
             "%03d", adminRepository.count() + 1);
@@ -806,12 +845,11 @@ public class AdminService {
             Boolean active) {
 
         if (!requestingAdmin.isSuperAdmin())
-            throw new RuntimeException(
-                "Only Super Admin can edit admins.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "FORBIDDEN", "Only Super Admin can edit admins.");
 
         Admin target = adminRepository.findById(adminId)
             .orElseThrow(() ->
-                new RuntimeException("Admin not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Admin not found."));
 
         if (fullName    != null) target.setFullName(fullName);
         if (email       != null) target.setEmail(email);
@@ -834,12 +872,10 @@ public class AdminService {
             Admin requestingAdmin, Long adminId) {
 
         if (!requestingAdmin.isSuperAdmin())
-            throw new RuntimeException(
-                "Only Super Admin can delete admins.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "FORBIDDEN", "Only Super Admin can delete admins.");
 
         if (requestingAdmin.getId().equals(adminId))
-            throw new RuntimeException(
-                "Cannot delete your own account.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Cannot delete your own account.");
 
         adminRepository.deleteById(adminId);
 
@@ -858,13 +894,13 @@ public class AdminService {
             String newPassword) {
 
         if (!requestingAdmin.isSuperAdmin())
-            throw new RuntimeException(
-                "Only Super Admin can reset passwords.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "FORBIDDEN", "Only Super Admin can reset passwords.");
 
         Admin target = adminRepository.findById(adminId)
             .orElseThrow(() ->
-                new RuntimeException("Admin not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Admin not found."));
 
+        target.setSessionVersion(target.getSessionVersion() + 1);
         target.setPassword(
             passwordEncoder.encode(newPassword));
         target.setLoginAttempts(0);
@@ -885,17 +921,16 @@ public class AdminService {
             Admin requestingAdmin, Long adminId) {
 
         if (!requestingAdmin.isSuperAdmin())
-            throw new RuntimeException(
-                "Only Super Admin can reset Google Authenticator.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "FORBIDDEN", "Only Super Admin can reset Google Authenticator.");
 
         Admin target = adminRepository.findById(adminId)
             .orElseThrow(() ->
-                new RuntimeException("Admin not found."));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Admin not found."));
 
         if (AdminRole.STAFF.equals(target.getRole()))
-            throw new RuntimeException(
-                "Staff accounts do not use Google Authenticator.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Staff accounts do not use Google Authenticator.");
 
+        target.setSessionVersion(target.getSessionVersion() + 1);
         target.setIs2FaEnabled(false);
         target.setTwofaSecret(null);
         target.setLoginAttempts(0);
@@ -964,14 +999,13 @@ public class AdminService {
             String value,
             String label) {
         if (value == null || value.isBlank())
-            throw new RuntimeException(label + " is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", label + " is required.");
         return value.trim();
     }
 
     private int validateCapacity(Integer totalCapacity) {
         if (totalCapacity == null || totalCapacity < 1)
-            throw new RuntimeException(
-                "Vehicle capacity must be at least 1.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Vehicle capacity must be at least 1.");
         return totalCapacity;
     }
 
@@ -981,3 +1015,4 @@ public class AdminService {
             : value.trim();
     }
 }
+

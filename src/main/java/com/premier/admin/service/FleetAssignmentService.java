@@ -6,6 +6,8 @@ import com.premier.admin.repository.ActivityLogRepository;
 import com.premier.driver.model.*;
 import com.premier.driver.repository.*;
 import com.premier.response.ApiResponse;
+import com.premier.exception.ClientException;
+import org.springframework.http.HttpStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +22,7 @@ public class FleetAssignmentService {
     private final DriverRepository driverRepository;
     private final VehicleRepository vehicleRepository;
     private final ActivityLogRepository activityLogRepository;
+    private final DriverShiftRepository shiftRepository;
 
     @Transactional(readOnly = true)
     public ApiResponse<List<AssignmentView>> activeAssignments() {
@@ -30,17 +33,23 @@ public class FleetAssignmentService {
 
     @Transactional
     public ApiResponse<AssignmentView> assign(Admin admin, Long driverId, Long vehicleId) {
-        Driver driver = driverRepository.findById(driverId)
-                .orElseThrow(() -> new RuntimeException("Driver not found."));
-        Vehicle vehicle = vehicleRepository.findById(vehicleId)
-                .orElseThrow(() -> new RuntimeException("Vehicle not found."));
+        Driver driver = driverRepository.findLockedById(driverId)
+                .orElseThrow(() -> new ClientException(HttpStatus.NOT_FOUND, "DRIVER_NOT_FOUND", "Driver not found."));
+        Vehicle vehicle = vehicleRepository.findLockedById(vehicleId)
+                .orElseThrow(() -> new ClientException(HttpStatus.NOT_FOUND, "VEHICLE_NOT_FOUND", "Vehicle not found."));
+        if (driver.getStatus() != DriverStatus.ACTIVE || vehicle.getStatus() != VehicleStatus.ACTIVE)
+            throw conflict("Only an active driver and vehicle may be assigned.");
 
         assignmentRepository.findByDriverIdAndStatus(driverId, AssignmentStatus.ACTIVE)
                 .filter(row -> !row.getVehicle().getId().equals(vehicleId))
-                .ifPresent(this::complete);
+                .ifPresent(row -> { throw conflict("End the current shift and unassign this driver before reassignment."); });
         assignmentRepository.findByVehicleIdAndStatus(vehicleId, AssignmentStatus.ACTIVE)
                 .filter(row -> !row.getDriver().getId().equals(driverId))
-                .ifPresent(this::complete);
+                .ifPresent(row -> { throw conflict("End the current shift and unassign this vehicle before reassignment."); });
+
+        var existing = assignmentRepository.findByDriverIdAndStatus(driverId, AssignmentStatus.ACTIVE);
+        if (existing.isPresent()) return ApiResponse.success("Driver is already assigned to this vehicle.", AssignmentView.from(existing.get()));
+        requireNoActiveShift(driverId, vehicle.getPlateNumber());
 
         DriverAssignment assignment = assignmentRepository
                 .findByDriverIdAndStatus(driverId, AssignmentStatus.ACTIVE)
@@ -57,8 +66,14 @@ public class FleetAssignmentService {
 
     @Transactional
     public ApiResponse<String> unassign(Admin admin, Long id) {
-        DriverAssignment assignment = assignmentRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Fleet assignment not found."));
+        var parents = assignmentRepository.findParents(id)
+                .orElseThrow(() -> new ClientException(HttpStatus.NOT_FOUND, "ASSIGNMENT_NOT_FOUND", "Fleet assignment not found."));
+        driverRepository.findLockedById(parents.getDriverId()).orElseThrow();
+        vehicleRepository.findLockedById(parents.getVehicleId()).orElseThrow();
+        DriverAssignment assignment = assignmentRepository.findById(id).orElseThrow();
+        if (assignment.getStatus() != AssignmentStatus.ACTIVE)
+            return ApiResponse.success("Driver and vehicle already unassigned.", "COMPLETED");
+        requireNoActiveShift(assignment.getDriver().getId(), assignment.getVehicle().getPlateNumber());
         complete(assignment);
         activityLogRepository.save(ActivityLog.builder().admin(admin)
                 .action("UNASSIGN_DRIVER_VEHICLE").targetType("DRIVER_ASSIGNMENT")
@@ -71,6 +86,15 @@ public class FleetAssignmentService {
         assignment.setStatus(AssignmentStatus.COMPLETED);
         assignment.setShiftEnd(LocalDateTime.now());
         assignmentRepository.save(assignment);
+    }
+
+    private ClientException conflict(String message) {
+        return new ClientException(HttpStatus.CONFLICT, "FLEET_ASSIGNMENT_CONFLICT", message);
+    }
+    private void requireNoActiveShift(Long driverId, String plate) {
+        if (shiftRepository.findByDriverIdAndStatus(driverId, ShiftStatus.ACTIVE).isPresent()
+                || shiftRepository.findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE).isPresent())
+            throw conflict("End the active shift before changing its assignment.");
     }
 
     public record AssignmentView(Long id, Long driverId, String driverName,

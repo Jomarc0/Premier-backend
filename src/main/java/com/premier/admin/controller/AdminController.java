@@ -42,34 +42,13 @@ public class AdminController {
     private final ObjectMapper objectMapper;
 
     //  EXCEPTION HANDLER 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<?> handleBadRequest(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest()
-            .body(ApiResponse.error(
-                ex.getMessage() != null ? ex.getMessage() : "Invalid request"));
+
+    @PostMapping("/transactions/{id}/reverse-fare")
+    public ResponseEntity<?> reverseFare(HttpServletRequest request, @PathVariable Long id,
+            @Valid @RequestBody com.premier.admin.request.FareReversalRequest body) {
+        return ResponseEntity.ok(adminService.reverseFare(getCurrentAdmin(request), id, body.reason()));
     }
 
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<?> handleError(RuntimeException ex) {
-        String msg = ex.getMessage();
-        if (msg != null && msg.contains("locked"))
-            return ResponseEntity.status(403)
-                .body(ApiResponse.error(msg));
-        if (msg != null && msg.contains("disabled"))
-            return ResponseEntity.status(403)
-                .body(ApiResponse.error(msg));
-        if ("No authorization token".equals(msg)
-                || "Admin not found".equals(msg)) {
-            return ResponseEntity.status(401)
-                .body(ApiResponse.error(msg));
-        }
-
-        // Do not report ordinary database or service failures as expired sessions.
-        // The admin frontend correctly logs out on 401 responses.
-        log.error("Admin request failed", ex);
-        return ResponseEntity.internalServerError()
-            .body(ApiResponse.error("Unable to complete the admin request."));
-    }
 
     //HELPER 
 
@@ -78,14 +57,13 @@ public class AdminController {
             request.getHeader("Authorization");
         if (authHeader == null ||
             !authHeader.startsWith("Bearer "))
-            throw new RuntimeException(
-                "No authorization token");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "No authorization token");
 
         String token = authHeader.substring(7);
         Long adminId = adminJwtUtil.extractAdminId(token);
         return adminRepository.findById(adminId)
             .orElseThrow(() ->
-                new RuntimeException("Admin not found"));
+                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Admin not found"));
     }
 
     private <T> ResponseEntity<?> okWithSerializationGuard(
@@ -93,10 +71,12 @@ public class AdminController {
         ApiResponse<T> body = ApiResponse.success(message, data);
         try {
             objectMapper.writeValueAsString(body);
-        } catch (Throwable ex) {
-            log.error("JSON serialization failed for {}", endpoint, ex);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            String reference = org.slf4j.MDC.get("requestReference");
+            log.error("ADMIN_SERIALIZATION_FAILURE endpoint={} reference={} type={}", endpoint, reference, ex.getClass().getSimpleName());
             return ResponseEntity.internalServerError()
-                .body(ApiResponse.error("Unable to complete the admin request."));
+                .body(ApiResponse.builder().success(false).code("INTERNAL_ERROR").reference(reference)
+                    .message("Unable to complete the admin request.").build());
         }
         return ResponseEntity.ok(body);
     }

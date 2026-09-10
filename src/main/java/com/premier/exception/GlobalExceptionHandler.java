@@ -2,6 +2,7 @@ package com.premier.exception;
 
 import org.hibernate.LazyInitializationException;
 import org.hibernate.exception.JDBCConnectionException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataAccessResourceFailureException;
@@ -11,6 +12,8 @@ import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.access.AccessDeniedException;
+
+import org.springframework.web.client.*;
 
 import com.premier.response.ApiResponse;
 
@@ -22,11 +25,16 @@ import lombok.extern.slf4j.Slf4j;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(ClientException.class)
+    public ResponseEntity<?> handleClient(ClientException ex) {
+        return ResponseEntity.status(ex.getStatus()).body(ApiResponse.builder()
+                .success(false).code(ex.getCode()).message(ex.getMessage())
+                .reference(com.premier.security.RequestCorrelationFilter.reference()).build());
+    }
+
     @ExceptionHandler(HttpMessageNotWritableException.class)
     public ResponseEntity<?> handleNotWritable(HttpMessageNotWritableException ex) {
-        log.error("Response JSON serialization failed", ex);
-        return ResponseEntity.internalServerError()
-                .body(ApiResponse.error("Unable to complete the request."));
+        return safeFailure(HttpStatus.INTERNAL_SERVER_ERROR, "RESPONSE_UNAVAILABLE", "Unable to complete the request.", ex);
     }
 
     @ExceptionHandler({
@@ -36,23 +44,28 @@ public class GlobalExceptionHandler {
             CannotAcquireLockException.class
     })
     public ResponseEntity<?> handleConnectionFailure(Exception ex) {
-        log.error("Database connection or lock failure — check pool size and concurrent load", ex);
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(ApiResponse.error("Database is busy. Please retry in a moment."));
+        return safeFailure(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", "Service is temporarily unavailable. Retry the original request identity.", ex);
+    }
+
+    @ExceptionHandler({org.springframework.web.client.ResourceAccessException.class,
+            org.springframework.web.client.RestClientException.class})
+    public ResponseEntity<?> handleRestClientFailure(Exception ex) {
+        return safeFailure(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", "Payment provider is temporarily unavailable. Please try again later.", ex);
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<?> handleDataIntegrity(DataIntegrityViolationException ex) {
+        return safeFailure(HttpStatus.CONFLICT, "DATA_INTEGRITY_VIOLATION", "Data integrity constraint violated. Please retry.", ex);
     }
 
     @ExceptionHandler(LazyInitializationException.class)
     public ResponseEntity<?> handleLazyInit(LazyInitializationException ex) {
-        log.error("Lazy association accessed outside an active persistence context", ex);
-        return ResponseEntity.internalServerError()
-                .body(ApiResponse.error("Unable to complete the request."));
+        return safeFailure(HttpStatus.INTERNAL_SERVER_ERROR, "RESPONSE_UNAVAILABLE", "Unable to complete the request.", ex);
     }
 
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<?> handleDataAccess(DataAccessException ex) {
-        log.error("Database access failed", ex);
-        return ResponseEntity.internalServerError()
-                .body(ApiResponse.error("Unable to complete the request."));
+        return safeFailure(HttpStatus.INTERNAL_SERVER_ERROR, "PAYMENT_UNKNOWN", "Unable to complete the request. Retry the original request identity.", ex);
     }
 
     @ExceptionHandler(PassengerNotFoundException.class)
@@ -101,56 +114,37 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(errors));
     }
 
+    @ExceptionHandler({org.springframework.http.converter.HttpMessageNotReadableException.class,
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class,
+            org.springframework.web.bind.MissingServletRequestParameterException.class})
+    public ResponseEntity<?> handleMalformedRequest(Exception ex) {
+        return safeFailure(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request fields are missing or invalid.", ex);
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<?> handleMethod(org.springframework.web.HttpRequestMethodNotSupportedException ex) {
+        return safeFailure(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "This request method is not supported.", ex);
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<?> handleMediaType(Exception ex) {
+        return safeFailure(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE", "Use the supported request content type.", ex);
+    }
+
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<?> handleRuntime(RuntimeException ex) {
-        log.warn("Handled runtime exception: {}", ex.getMessage());
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(ApiResponse.error(safeRuntimeMessage(ex.getMessage())));
+        return safeFailure(HttpStatus.INTERNAL_SERVER_ERROR, "SERVICE_UNAVAILABLE", "Unable to complete the request. Retry the original request identity.", ex);
     }
 
-    private String safeRuntimeMessage(String message) {
-        if (message == null || message.isBlank()) {
-            return "Unable to process request. Please try again.";
-        }
-
-        String trimmed = message.trim();
-        if (isSafeClientMessage(trimmed)) {
-            return trimmed;
-        }
-
-        return "Unable to process request. Please try again.";
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<?> handleSecurity(SecurityException ex) {
+        return safeFailure(HttpStatus.FORBIDDEN, "DEVICE_REJECTED", "Device authorization or request freshness could not be verified.", ex);
     }
 
-    private boolean isSafeClientMessage(String message) {
-        return message.equals("Transaction not found.")
-                || message.equals("Payment not yet completed.")
-                || message.equals("Passenger not found.")
-                || message.equals("QR fare token has already been used.")
-                || message.equals("QR fare token expired. Please generate a new one.")
-                || message.equals("Invalid QR fare token.")
-                || message.equals("Invalid mobile NFC fare token.")
-                || message.equals("Mobile NFC token has already been used.")
-                || message.equals("Mobile NFC token expired. Please generate a new one.")
-                || message.equals("Mobile NFC fare token is required.")
-                || message.equals("QR fare token is required.")
-                || message.equals("RFID UID is required.")
-                || message.equals("Card not recognized. Please register your card.")
-                || message.equals("Card number not found. Please check your card number or contact support.")
-                || message.equals("Card Number is required.")
-                || message.equals("New RFID UID is already assigned to another card.")
-                || message.equals("New RFID UID is required.")
-                || message.equals("Support ticket not found.")
-                || message.equals("Support ticket storage is not ready. Please ask admin to run the support ticket database migration.")
-                || message.equals("Admin notes are required when rejecting a ticket.")
-                || message.equals("Use the resolve or reject action to close a ticket.")
-                || message.equals("This support ticket is already closed and cannot be changed.")
-                || message.equals("Payment already processed recently. Please wait a moment.")
-                || message.equals("Too many login attempts. Please try again later.")
-                || message.equals("Invalid credentials.")
-                || message.equals("Account is locked. Try again later.")
-                || message.equals("Account is disabled.")
-                || message.equals("Invalid Google Authenticator code.")
-                || message.startsWith("Account is ")
-                || message.startsWith("Insufficient balance.");
+    private ResponseEntity<?> safeFailure(HttpStatus status, String code, String message, Exception ex) {
+        String reference = com.premier.security.RequestCorrelationFilter.reference();
+        log.warn("Request failure reference={} type={}", reference, ex.getClass().getName());
+        return ResponseEntity.status(status).body(ApiResponse.builder().success(false).code(code).message(message).reference(reference).build());
     }
+
 }

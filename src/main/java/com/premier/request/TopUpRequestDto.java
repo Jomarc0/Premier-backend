@@ -8,6 +8,7 @@ import java.math.BigDecimal;
 public class TopUpRequestDto {
 
     @NotNull(message = "Amount is required")
+    @Digits(integer = 5, fraction = 2, message = "Use at most two decimal places")
     @DecimalMin(value = "20.00",      
         message = "Minimum top-up is ₱20")
     @DecimalMax(value = "10000.00",

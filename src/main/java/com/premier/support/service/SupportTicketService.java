@@ -32,6 +32,7 @@ import java.util.UUID;
 @Slf4j
 public class SupportTicketService {
 
+    private final com.premier.service.RfidUidRegistrationService uidRegistrations;
     private final SupportTicketRepository ticketRepository;
     private final PassengerRepository passengerRepository;
     private final ActivityLogRepository activityLogRepository;
@@ -45,7 +46,7 @@ public class SupportTicketService {
                                                                  SupportTicketIssueType issueType,
                                                                  String reason) {
         if (passenger == null || passenger.getId() == null || passenger.getCardNumber() == null) {
-            throw new RuntimeException("Please log in before creating a support ticket.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Please log in before creating a support ticket.");
         }
         String normalizedCard = cleanCardNumber(passenger.getCardNumber());
         String normalizedEmail = clean(email);
@@ -73,7 +74,7 @@ public class SupportTicketService {
 
         return ApiResponse.success(
                 "Your ticket has been submitted successfully. Your ticket number is " + ticket.getTicketNumber() + ". Please wait for admin confirmation through your email.",
-                SupportTicketResponse.from(ticket));
+                SupportTicketResponse.forPassenger(ticket));
     }
 
     /** Requires a full passenger session created after TOTP verification. */
@@ -81,10 +82,10 @@ public class SupportTicketService {
     public ApiResponse<SupportTicketResponse> reportLostCard(Passenger authenticatedPassenger, String email) {
         requirePassenger(authenticatedPassenger);
         Passenger passenger = passengerRepository.findLockedById(authenticatedPassenger.getId())
-                .orElseThrow(() -> new RuntimeException("Passenger not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
         String normalizedEmail = clean(email);
         if (normalizedEmail == null || normalizedEmail.isBlank()) {
-            throw new RuntimeException("Email address is required so we can send your support update.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Email address is required so we can send your support update.");
         }
 
         SupportTicket existing = ticketRepository
@@ -96,7 +97,7 @@ public class SupportTicketService {
                 .orElse(null);
         if (existing != null) {
             return ApiResponse.success("Your lost-card report is already being handled. Your card remains frozen.",
-                    SupportTicketResponse.from(existing));
+                    SupportTicketResponse.forPassenger(existing));
         }
 
         passenger.setStatus(PassengerStatus.FROZEN);
@@ -120,7 +121,7 @@ public class SupportTicketService {
 
         return ApiResponse.success("Your card has been frozen and a high-priority lost-card ticket was created: "
                         + ticket.getTicketNumber() + ". Visit the office with a valid ID for replacement.",
-                SupportTicketResponse.from(ticket));
+                SupportTicketResponse.forPassenger(ticket));
     }
 
     public ApiResponse<List<SupportTicketResponse>> listTickets() {
@@ -136,7 +137,7 @@ public class SupportTicketService {
         return ApiResponse.success("Your support tickets fetched.",
                 ticketRepository.findByPassengerIdOrderByCreatedAtDesc(passenger.getId())
                         .stream()
-                        .map(SupportTicketResponse::from)
+                        .map(SupportTicketResponse::forPassenger)
                         .toList());
     }
 
@@ -146,8 +147,8 @@ public class SupportTicketService {
                 .filter(candidate -> candidate.getPassenger() != null
                         && passenger.getId().equals(candidate.getPassenger().getId()))
                 // Do not reveal whether a ticket owned by another passenger exists.
-                .orElseThrow(() -> new RuntimeException("Support ticket not found."));
-        return ApiResponse.success("Your support ticket fetched.", SupportTicketResponse.from(ticket));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Support ticket not found."));
+        return ApiResponse.success("Your support ticket fetched.", SupportTicketResponse.forPassenger(ticket));
     }
 
     public ApiResponse<SupportTicketResponse> getTicket(Long id) {
@@ -165,7 +166,7 @@ public class SupportTicketService {
     @Transactional
     public ApiResponse<SupportTicketResponse> updateStatus(Admin admin, Long id, SupportTicketStatus status) {
         if (status == SupportTicketStatus.RESOLVED || status == SupportTicketStatus.REJECTED) {
-            throw new RuntimeException("Use the resolve or reject action to close a ticket.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "Use the resolve or reject action to close a ticket.");
         }
         SupportTicket ticket = findTicket(id);
         requireOpenTicket(ticket);
@@ -193,7 +194,7 @@ public class SupportTicketService {
         SupportTicket ticket = findTicket(id);
         requireOpenTicket(ticket);
         Passenger passenger = passengerRepository.findLockedById(ticket.getPassenger().getId())
-                .orElseThrow(() -> new RuntimeException("Passenger not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
         passenger.setStatus(PassengerStatus.FROZEN);
         passengerRepository.save(passenger);
 
@@ -216,16 +217,17 @@ public class SupportTicketService {
         SupportTicket ticket = findTicket(id);
         requireOpenTicket(ticket);
         Passenger passenger = passengerRepository.findLockedById(ticket.getPassenger().getId())
-                .orElseThrow(() -> new RuntimeException("Passenger not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
         String normalizedUid = normalizeRfidUid(newRfidUid);
 
         passengerRepository.findByRfidUid(normalizedUid).ifPresent(existing -> {
             if (!existing.getId().equals(passenger.getId())) {
-                throw new RuntimeException("New RFID UID is already assigned to another card.");
+                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "UID_RESERVED", "New RFID UID is already assigned to another card.");
             }
         });
 
         String oldUid = passenger.getRfidUid();
+        uidRegistrations.claim(normalizedUid, "PASSENGER", passenger.getId());
         passenger.setRfidUid(normalizedUid);
         passenger.setStatus(PassengerStatus.ACTIVE);
         passengerRepository.save(passenger);
@@ -259,14 +261,14 @@ public class SupportTicketService {
         boolean emailSent = sendTicketDecisionSafely(ticket,
                 "Premier Transport support ticket resolved",
                 "Your support ticket has been resolved by the Premier Transport support team. "
-                        + publicAdminMessage(ticket.getAdminNotes()));
+                        + "Open your support ticket for its current status.");
         return ApiResponse.success(decisionMessage("resolved", emailSent), SupportTicketResponse.from(ticket));
     }
 
     @Transactional
     public ApiResponse<SupportTicketResponse> reject(Admin admin, Long id, String notes) {
         if (notes == null || notes.trim().isBlank()) {
-            throw new RuntimeException("Admin notes are required when rejecting a ticket.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Admin notes are required when rejecting a ticket.");
         }
         SupportTicket ticket = findTicket(id);
         requireOpenTicket(ticket);
@@ -280,7 +282,7 @@ public class SupportTicketService {
         boolean emailSent = sendTicketDecisionSafely(ticket,
                 "Premier Transport support ticket update",
                 "Your support ticket was reviewed by the Premier Transport support team but was not approved. "
-                        + publicAdminMessage(ticket.getAdminNotes()));
+                        + "Open your support ticket for its current status.");
         return ApiResponse.success(decisionMessage("rejected", emailSent), SupportTicketResponse.from(ticket));
     }
 
@@ -302,12 +304,12 @@ public class SupportTicketService {
 
     private SupportTicket findTicket(Long id) {
         return ticketRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Support ticket not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Support ticket not found."));
     }
 
     private void requirePassenger(Passenger passenger) {
         if (passenger == null || passenger.getId() == null) {
-            throw new RuntimeException("Please log in before viewing support tickets.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Please log in before viewing support tickets.");
         }
     }
 
@@ -319,19 +321,19 @@ public class SupportTicketService {
 
     private SupportTicket findTicketForUpdate(Long id) {
         return ticketRepository.findByIdForUpdate(id)
-                .orElseThrow(() -> new RuntimeException("Support ticket not found."));
+                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Support ticket not found."));
     }
 
     private void requireOpenTicket(SupportTicket ticket) {
         if (ticket.getStatus() == SupportTicketStatus.RESOLVED || ticket.getStatus() == SupportTicketStatus.REJECTED) {
-            throw new RuntimeException("This support ticket is already closed and cannot be changed.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "This support ticket is already closed and cannot be changed.");
         }
     }
 
     private String nextTicketNumber() {
         // Count-based numbers collide when two passengers submit at once. Keep a
         // readable prefix but generate the identifier independently of row count.
-        return "TICKET-" + UUID.randomUUID().toString().substring(0, 12).toUpperCase();
+        return "TICKET-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
     }
 
     private SupportTicketPriority priorityFor(SupportTicketIssueType issueType, String reason) {
@@ -371,7 +373,7 @@ public class SupportTicketService {
     private String cleanCardNumber(String value) {
         String cleaned = clean(value);
         if (cleaned == null || cleaned.isBlank()) {
-            throw new RuntimeException("Card Number is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Card Number is required.");
         }
         return cleaned.replaceAll("\\s+", "");
     }
@@ -389,7 +391,7 @@ public class SupportTicketService {
 
     private String normalizeRfidUid(String rfidUid) {
         if (rfidUid == null || rfidUid.isBlank()) {
-            throw new RuntimeException("New RFID UID is required.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "New RFID UID is required.");
         }
         return rfidUid.trim().replaceAll("[^A-Fa-f0-9]", "").toUpperCase();
     }

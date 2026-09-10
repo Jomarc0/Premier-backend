@@ -38,8 +38,14 @@ public class Device {
     private String plateNumber;
 
     @JsonIgnore
+    @lombok.ToString.Exclude
     @Column(name = "token_hash", nullable = false, length = 255)
     private String tokenHash;
+    @Builder.Default @Column(nullable = false) private long credentialVersion = 0;
+    @Column(length = 24) private String gpsState;
+    private java.time.Instant gpsCapturedAt;
+    private java.time.Instant heartbeatAt;
+    @Column(columnDefinition = "text") private String healthSnapshot;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)

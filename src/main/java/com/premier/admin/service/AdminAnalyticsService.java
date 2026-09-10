@@ -25,6 +25,8 @@ import com.premier.support.repository.SupportTicketRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.premier.exception.ClientException;
+import org.springframework.http.HttpStatus;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -34,6 +36,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -57,6 +60,7 @@ public class AdminAnalyticsService {
     private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Manila");
     private static final int OFFLINE_DEVICE_MINUTES = 5;
     private static final int MISSING_GPS_MINUTES = 15;
+    private static final int MAX_ANALYTICS_DAYS = 90;
     private static final DateTimeFormatter DAY_LABEL = DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH);
 
     private final TransactionRepository transactionRepository;
@@ -356,8 +360,7 @@ public class AdminAnalyticsService {
                 .map(r -> mapOf("transactionId", r.reference(), "time", formatDateTime(r.createdAt(), zone), "bus", r.bus(),
                         "direction", r.direction(), "directionLabel", directionLabel(r.direction()), "paymentMethod", paymentLabel(r.paymentMethod()),
                         "amount", r.amount(), "status", title(r.status()), "maskedCardNumber", r.passengerId() == null ? "" : "Account fare")).toList();
-        List<Map<String, Object>> tickets = supportTicketRepository.findAll().stream()
-                .sorted(Comparator.comparing(SupportTicket::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder()))).limit(10)
+        List<Map<String, Object>> tickets = supportTicketRepository.findTop10ByOrderByCreatedAtDesc().stream()
                 .map(t -> mapOf("ticketNumber", t.getTicketNumber(), "category", title(t.getIssueType() == null ? null : t.getIssueType().name()),
                         "status", title(t.getStatus() == null ? null : t.getStatus().name()), "dateSubmitted", formatDateTime(t.getCreatedAt(), zone))).toList();
         return mapOf("fareTransactions", fares, "supportTickets", tickets, "systemAlerts", systemAlerts(attempts, devices, locations, zone));
@@ -542,13 +545,18 @@ public class AdminAnalyticsService {
             case "last30" -> start = today.minusDays(29);
             case "thismonth", "monthly", "month" -> start = today.withDayOfMonth(1);
             case "previousmonth" -> { LocalDate p = today.minusMonths(1); start = p.withDayOfMonth(1); end = p.with(TemporalAdjusters.lastDayOfMonth()); }
-            case "custom" -> { if (startDate == null || endDate == null) throw new IllegalArgumentException("Custom date range requires both startDate and endDate."); start = startDate; end = endDate; }
+            case "custom" -> { if (startDate == null || endDate == null) throw analyticsRange("Custom date range requires both startDate and endDate."); start = startDate; end = endDate; }
             default -> start = today.minusDays(6);
         }
-        if (end.isAfter(today)) throw new IllegalArgumentException("Future date ranges are not supported.");
-        if (start.isAfter(end)) throw new IllegalArgumentException("Start date cannot be after end date.");
-        if (start.isBefore(today.minusYears(5))) throw new IllegalArgumentException("Analytics date range cannot exceed five years.");
+        if (end.isAfter(today)) throw analyticsRange("Future date ranges are not supported.");
+        if (start.isAfter(end)) throw analyticsRange("Start date cannot be after end date.");
+        long days = ChronoUnit.DAYS.between(start, end) + 1;
+        if (days > MAX_ANALYTICS_DAYS) throw analyticsRange("Analytics date range cannot exceed 90 days.");
         return new DateWindow(start.atStartOfDay(), end.plusDays(1).atStartOfDay().minusNanos(1));
+    }
+
+    private ClientException analyticsRange(String message) {
+        return new ClientException(HttpStatus.BAD_REQUEST, "ANALYTICS_RANGE_INVALID", message);
     }
 
     private DateWindow dayWindow(LocalDate day) { return new DateWindow(day.atStartOfDay(), day.plusDays(1).atStartOfDay().minusNanos(1)); }

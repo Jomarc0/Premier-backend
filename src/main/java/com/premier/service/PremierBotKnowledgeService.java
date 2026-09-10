@@ -96,9 +96,17 @@ public class PremierBotKnowledgeService {
                     """.trim(), "LOCAL_PAYMENT_FAILED", "OPEN_SUPPORT_TICKET_FORM", List.of("Check balance", "Top-up help", "Open ticket"));
         }
 
-        if (containsAny(text, "fare deduction", "fare dispute", "wrong fare", "deducted twice")) {
+if (containsAny(text, "fare deduction", "fare dispute", "wrong fare", "deducted twice")) {
             return action("Fares are recorded when a valid payment is processed. If you think a fare was deducted incorrectly, check your recent transactions and submit a support ticket with the transaction time and reference number.",
                     "LOCAL_FARE_DEDUCTION", "OPEN_SUPPORT_TICKET_FORM", List.of("Recent transaction", "Open ticket"));
+        }
+
+        if (containsAny(text, "lost authenticator", "lost 2fa", "lost totp", "lost google authenticator", "recover authenticator", "recover 2fa", "recover totp")) {
+            return action("""
+                    To recover your authenticator, a Super Admin must verify your identity under the organization's approved procedure and open a support ticket.
+
+                    Please submit a support ticket with your card number, contact email, and a brief reason. The Super Admin will verify your identity before authorizing recovery.
+                    """.trim(), "LOCAL_MFA_RECOVERY", "OPEN_SUPPORT_TICKET_FORM", List.of("Open ticket", "Contact support"));
         }
 
         if (containsAny(text, "rfid", "card", "lost", "stolen", "freeze", "blocked", "damaged", "replacement")) {

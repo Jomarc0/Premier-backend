@@ -24,4 +24,14 @@ public class AdminStaffCashController {
     public ResponseEntity<?> remit(Authentication auth, @PathVariable Long staffId, @Valid @RequestBody ConfirmStaffRemittanceRequest request) {
         return ResponseEntity.ok(service.confirm((Admin) auth.getPrincipal(), staffId, request.getDate(), request.getActualCashReceived()));
     }
+    @PostMapping("/collections/{staffId}/adjustments")
+    public ResponseEntity<?> adjust(Authentication auth,@PathVariable Long staffId,
+            @Valid @RequestBody com.premier.staffcash.request.AdjustStaffRemittanceRequest request) {
+        return ResponseEntity.ok(service.adjust((Admin)auth.getPrincipal(),staffId,request));
+    }
+    @GetMapping("/collections/{staffId}/adjustments")
+    public ResponseEntity<?> adjustments(@PathVariable Long staffId,
+            @RequestParam @DateTimeFormat(iso=DateTimeFormat.ISO.DATE) LocalDate date) {
+        return ResponseEntity.ok(service.adjustmentHistory(staffId,date));
+    }
 }

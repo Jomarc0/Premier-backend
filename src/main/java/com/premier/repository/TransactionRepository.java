@@ -14,10 +14,15 @@ import java.util.Optional;
 import java.time.LocalDateTime;
 
 public interface TransactionRepository extends JpaRepository<Transaction, Long> {
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from Transaction t where t.id = :id")
+    Optional<Transaction> findLockedById(@org.springframework.data.repository.query.Param("id") Long id);
     Page<Transaction> findByPassengerIdOrderByCreatedAtDesc(Long passengerId, Pageable pageable);
     List<Transaction> findTop5ByPassengerIdOrderByCreatedAtDesc(Long passengerId);
     Page<Transaction> findByPassengerIdAndTypeOrderByCreatedAtDesc(Long passengerId, TransactionType type, Pageable pageable);
     Optional<Transaction> findByIdempotencyKey(String idempotencyKey);
+    Optional<Transaction> findByReversalOfId(Long reversalOfId);
+    boolean existsByPassengerIdAndPaymentMethodAndStatusAndCreatedAtAfter(Long passengerId, com.premier.model.PaymentMethod method, com.premier.model.TransactionStatus status, LocalDateTime after);
     Optional<Transaction> findByOfflineTransactionId(String offlineTransactionId);
     Optional<Transaction> findByReferenceNumberAndPassengerId(String referenceNumber, Long passengerId);
 

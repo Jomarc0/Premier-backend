@@ -52,10 +52,10 @@ public class AdminVehicleMonitoringController {
         Map<String, DriverLocation> latestByPlate = locationRepository.findLatestValidPerPlate().stream()
                 .collect(Collectors.toMap(location -> normalizePlate(location.getPlateNumber()),
                         Function.identity(), this::newerLocation));
-        Map<String, LocalDateTime> lastSeenByPlate = deviceRepository.findAll().stream()
+        Map<String, Device> lastSeenByPlate = deviceRepository.findAll().stream()
                 .filter(device -> device.getPlateNumber() != null && device.getLastSeenAt() != null)
-                .collect(Collectors.toMap(device -> normalizePlate(device.getPlateNumber()), Device::getLastSeenAt,
-                        (first, second) -> first.isAfter(second) ? first : second));
+                .collect(Collectors.toMap(device -> normalizePlate(device.getPlateNumber()), Function.identity(),
+                        (first, second) -> first.getLastSeenAt().isAfter(second.getLastSeenAt()) ? first : second));
         List<Map<String, Object>> buses = vehicleRepository.findAll().stream()
                 .sorted(Comparator.comparing(Vehicle::getPlateNumber, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
                 .map(vehicle -> busResponse(vehicle, latestByPlate.get(normalizePlate(vehicle.getPlateNumber())),
@@ -76,12 +76,16 @@ public class AdminVehicleMonitoringController {
             @RequestParam(required = false) String range) {
         String normalizedPlate = normalizePlate(plateNumber);
         if (vehicleRepository.findByPlateNumber(normalizedPlate).isEmpty()) {
-            throw new IllegalArgumentException("Vehicle not found.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "VEHICLE_NOT_FOUND", "Vehicle not found.");
         }
         DateWindow window = historyWindow(date, startTime, endTime, range);
         List<DriverLocation> locations = locationRepository
-                .findByPlateNumberAndRecordedAtBetweenOrderByRecordedAtAsc(normalizedPlate, window.start(), window.end())
-                .stream().filter(this::validCoordinates).toList();
+                .findByPlateNumberAndRecordedAtBetweenOrderByRecordedAtAsc(normalizedPlate, window.start(), window.end(),
+                        org.springframework.data.domain.PageRequest.of(0, 10001));
+        if (locations.size() > 10000) throw new com.premier.exception.ClientException(
+                org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "HISTORY_RANGE_TOO_LARGE",
+                "Too many GPS records. Select a shorter time range.");
+        locations = locations.stream().filter(this::validCoordinates).toList();
         return ApiResponse.success("Vehicle location history fetched.", mapOf(
                 "plateNumber", normalizedPlate,
                 "route", fixedRoute(),
@@ -92,7 +96,14 @@ public class AdminVehicleMonitoringController {
     }
 
     private Map<String, Object> busResponse(Vehicle vehicle, DriverLocation location,
-                                            LocalDateTime deviceLastSeen, LocalDateTime now) {
+                                            Device device, LocalDateTime now) {
+        LocalDateTime deviceLastSeen = device == null ? null : device.getLastSeenAt();
+        boolean online = device != null && device.isActive() && deviceLastSeen != null && deviceLastSeen.isAfter(now.minusSeconds(90));
+        boolean fresh = online && location != null && location.getCapturedAt() != null
+                && location.getCapturedAt().isAfter(Instant.now().minusSeconds(45))
+                && device != null && "GPS_VALID".equals(device.getGpsState());
+        String fixState = fresh ? "GPS_VALID" : device != null && device.getGpsState() != null
+                && !"GPS_VALID".equals(device.getGpsState()) ? device.getGpsState() : location == null ? "GPS_NO_FIX" : "GPS_STALE";
         String gpsStatus = monitoringStatus(location, now);
         LocalDateTime gpsUpdatedAt = location == null ? null : location.getRecordedAt();
         return mapOf("vehicleId", vehicle.getId(), "plateNumber", vehicle.getPlateNumber(),
@@ -100,16 +111,21 @@ public class AdminVehicleMonitoringController {
                 "status", gpsStatus, "totalCapacity", vehicle.getTotalCapacity(), "hasValidLocation", location != null,
                 "latitude", location == null ? null : location.getLatitude(),
                 "longitude", location == null ? null : location.getLongitude(),
-                "speed", location == null ? 0.0 : safeSpeed(location.getSpeed()), "gpsStatus", movementStatus(location),
+                "speed", !fresh ? null : safeSpeed(location.getSpeed()), "gpsStatus", fresh ? movementStatus(location) : "Unknown",
                 "lastUpdated", gpsUpdatedAt, "lastSeen", newest(deviceLastSeen, gpsUpdatedAt),
-                "online", "ONLINE".equals(gpsStatus), "locationFresh", "ONLINE".equals(gpsStatus));
+                "capturedAt", location == null ? null : location.getCapturedAt(), "deviceLastSeen", deviceLastSeen,
+                "online", online, "locationFresh", fresh, "deviceStatus", online ? "ONLINE" : "DEVICE_OFFLINE",
+                "gpsState", fixState, "health", device == null ? null : device.getHealthSnapshot());
     }
 
     private Map<String, Object> historyPoint(DriverLocation location) {
         return mapOf("id", location.getId(), "plateNumber", location.getPlateNumber(),
                 "latitude", location.getLatitude(), "longitude", location.getLongitude(),
                 "speed", safeSpeed(location.getSpeed()), "heading", location.getHeading(),
-                "status", movementStatus(location), "recordedAt", location.getRecordedAt());
+                "status", movementStatus(location), "recordedAt", location.getRecordedAt(),
+                "capturedAt", location.getCapturedAt(), "receivedAt", location.getReceivedAt(),
+                "deviceId", location.getDeviceId(), "satellites", location.getSatellites(), "hdop", location.getHdop(),
+                "trustedCapture", location.getCapturedAt() != null);
     }
 
     private Map<String, Object> historySummary(List<DriverLocation> locations) {
@@ -119,13 +135,17 @@ public class AdminVehicleMonitoringController {
                     "maximumSpeedKmh", null, "numberOfStops", null, "longestStopSeconds", null);
         }
         double distance = 0, speedTotal = 0, maxSpeed = 0;
-        int stops = 0;
+        int stops = 0, speedSamples = 0;
         long longestStopSeconds = 0;
         LocalDateTime stopStartedAt = null;
         for (int index = 0; index < locations.size(); index++) {
             DriverLocation point = locations.get(index);
-            if (index > 0) distance += distanceKm(locations.get(index - 1), point);
-            double speed = safeSpeed(point.getSpeed());
+            if (index > 0 && Duration.between(locations.get(index - 1).getRecordedAt(), point.getRecordedAt()).getSeconds() <= 120)
+                distance += distanceKm(locations.get(index - 1), point);
+            else if (index > 0) stopStartedAt = null;
+            Double speed = safeSpeed(point.getSpeed());
+            if (speed == null) { stopStartedAt = null; continue; }
+            speedSamples++;
             speedTotal += speed;
             maxSpeed = Math.max(maxSpeed, speed);
             if (speed < 1.0 && stopStartedAt == null) {
@@ -145,9 +165,9 @@ public class AdminVehicleMonitoringController {
         LocalDateTime last = locations.get(locations.size() - 1).getRecordedAt();
         return mapOf("gpsRecords", locations.size(), "firstRecorded", first, "lastRecorded", last,
                 "totalRecordedSeconds", Math.max(0, Duration.between(first, last).getSeconds()),
-                "totalDistanceKm", decimal(distance), "averageSpeedKmh", decimal(speedTotal / locations.size()),
-                "maximumSpeedKmh", decimal(maxSpeed), "numberOfStops", stops,
-                "longestStopSeconds", longestStopSeconds);
+                "totalDistanceKm", decimal(distance), "averageSpeedKmh", speedSamples == 0 ? null : decimal(speedTotal / speedSamples),
+                "maximumSpeedKmh", speedSamples == 0 ? null : decimal(maxSpeed), "numberOfStops", speedSamples == 0 ? null : stops,
+                "longestStopSeconds", speedSamples == 0 ? null : longestStopSeconds);
     }
 
     private Map<String, Object> fixedRoute() {
@@ -168,10 +188,10 @@ public class AdminVehicleMonitoringController {
             };
         }
         LocalDate selectedDate = date == null ? now.toLocalDate() : date;
-        if (selectedDate.isAfter(now.toLocalDate())) throw new IllegalArgumentException("History date cannot be in the future.");
+        if (selectedDate.isAfter(now.toLocalDate())) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_HISTORY_DATE", "History date cannot be in the future.");
         LocalTime from = startTime == null ? LocalTime.MIN : startTime;
         LocalTime to = endTime == null ? LocalTime.MAX : endTime;
-        if (from.isAfter(to)) throw new IllegalArgumentException("Start time cannot be after end time.");
+        if (from.isAfter(to)) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_HISTORY_RANGE", "Start time cannot be after end time.");
         return new DateWindow(selectedDate.atTime(from), selectedDate.atTime(to));
     }
 
@@ -192,11 +212,13 @@ public class AdminVehicleMonitoringController {
     }
 
     private String movementStatus(DriverLocation location) {
-        return location == null ? "No GPS" : safeSpeed(location.getSpeed()) >= 1.0 ? "Moving" : "Stopped";
+        if (location == null) return "No GPS";
+        Double speed = safeSpeed(location.getSpeed());
+        return speed == null ? "Unknown" : speed >= 1.0 ? "Moving" : "Stopped";
     }
 
-    private double safeSpeed(Double speed) {
-        return speed == null || !Double.isFinite(speed) || speed < 0 ? 0.0 : speed;
+    private Double safeSpeed(Double speed) {
+        return speed == null || !Double.isFinite(speed) || speed < 0 || speed > 180 ? null : speed;
     }
 
     private DriverLocation newerLocation(DriverLocation first, DriverLocation second) {

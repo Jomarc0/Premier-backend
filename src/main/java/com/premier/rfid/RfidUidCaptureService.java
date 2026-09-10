@@ -17,8 +17,9 @@ public class RfidUidCaptureService {
     private static final long CAPTURE_TIMEOUT_SECONDS = 60;
     private final Map<String, CaptureSession> sessions = new ConcurrentHashMap<>();
 
-    public ApiResponse<Map<String, Object>> startCapture() {
+    public synchronized ApiResponse<Map<String, Object>> startCapture() {
         expireOldSessions();
+        if (sessions.size() >= 100) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, "CAPTURE_CAPACITY", "Too many active capture requests.");
         String requestId = UUID.randomUUID().toString();
         CaptureSession session = new CaptureSession(requestId);
         sessions.put(requestId, session);
@@ -29,7 +30,7 @@ public class RfidUidCaptureService {
                         "expiresAt", session.expiresAt.toString()));
     }
 
-    public ApiResponse<Map<String, Object>> status(String requestId) {
+    public synchronized ApiResponse<Map<String, Object>> status(String requestId) {
         expireOldSessions();
         CaptureSession session = sessions.get(requestId);
         if (session == null) {
@@ -46,10 +47,11 @@ public class RfidUidCaptureService {
                         "expiresAt", session.expiresAt.toString()));
     }
 
-    public ApiResponse<Map<String, Object>> nextForDevice(DevicePrincipal device) {
+    public synchronized ApiResponse<Map<String, Object>> nextForDevice(DevicePrincipal device) {
         expireOldSessions();
         return sessions.values().stream()
-                .filter(session -> "WAITING_FOR_CARD".equals(session.status))
+                .filter(session -> "WAITING_FOR_CARD".equals(session.status)
+                        && device != null && (session.deviceId == null || session.deviceId.equals(device.deviceId())))
                 .min(Comparator.comparing(session -> session.createdAt))
                 .map(session -> {
                     session.deviceId = device != null ? device.deviceId() : null;
@@ -63,15 +65,18 @@ public class RfidUidCaptureService {
                         dataMap("active", false)));
     }
 
-    public ApiResponse<Map<String, Object>> submitFromDevice(String requestId, String uid, DevicePrincipal device) {
+    public synchronized ApiResponse<Map<String, Object>> submitFromDevice(String requestId, String uid, DevicePrincipal device) {
         expireOldSessions();
         CaptureSession session = sessions.get(requestId);
         if (session == null || session.isExpired()) {
             return ApiResponse.error("RFID UID capture expired.");
         }
 
+        if (device == null || !device.deviceId().equals(session.deviceId) || !"WAITING_FOR_CARD".equals(session.status)) {
+            throw new SecurityException("Capture session is not assigned to this device.");
+        }
         String normalizedUid = normalizeUid(uid);
-        if (normalizedUid.length() < 4) {
+        if (!normalizedUid.matches("(?:[A-F0-9]{8}|[A-F0-9]{14}|[A-F0-9]{20})")) {
             return ApiResponse.error("Invalid RFID UID.");
         }
 
@@ -131,7 +136,7 @@ public class RfidUidCaptureService {
         }
 
         private boolean isExpired() {
-            return LocalDateTime.now().isAfter(expiresAt) && !"CAPTURED".equals(status);
+            return LocalDateTime.now().isAfter(expiresAt);
         }
     }
 }

@@ -9,6 +9,7 @@ public record BusQueueItemResponse(
         Long etaMinutes,
         Integer queuePosition,
         BusQueueStatus status,
-        String statusLabel
+        String statusLabel,
+        java.time.Instant capturedAt
 ) {
 }

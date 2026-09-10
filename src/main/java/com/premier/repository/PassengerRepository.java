@@ -14,6 +14,10 @@ public interface PassengerRepository
     // Login uses cardNumber
     Optional<Passenger> findByCardNumber(String cardNumber);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Passenger p where p.cardNumber = :cardNumber")
+    Optional<Passenger> findLockedByCardNumber(@Param("cardNumber") String cardNumber);
+
     // Find by RFID uid (from card tap)
     Optional<Passenger> findByRfidUid(String rfidUid);
 

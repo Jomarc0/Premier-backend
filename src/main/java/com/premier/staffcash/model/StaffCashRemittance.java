@@ -8,6 +8,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
+@org.hibernate.annotations.Immutable
 @Entity
 @Table(name = "staff_cash_remittances", uniqueConstraints =
         @UniqueConstraint(name = "uk_staff_cash_remittance_staff_date", columnNames = {"staff_id", "collection_date"}))

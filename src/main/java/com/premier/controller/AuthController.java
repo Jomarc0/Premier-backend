@@ -23,6 +23,14 @@ public class AuthController {
     private final PassengerRepository passengerRepository;
     private final BiometricAuthService biometricAuthService;
 
+    public record RecoveryRequest(@jakarta.validation.constraints.NotBlank
+                                  @jakarta.validation.constraints.Size(max = 2048) String recoveryToken) {}
+
+    @PostMapping("/recovery/complete")
+    public ResponseEntity<?> recover(@Valid @RequestBody RecoveryRequest request) {
+        return ResponseEntity.ok(authService.completeRecovery(request.recoveryToken()));
+    }
+
     @PostMapping("/register")
     public ResponseEntity<?> register(
             @Valid @RequestBody RegisterRequest request) {
@@ -51,18 +59,15 @@ public class AuthController {
 
             String token = authHeader.substring(7);
 
-            if (!jwtUtil.isTempToken(token)) {
+            if (!jwtUtil.isTokenValid(token) || !"ENROLL".equals(jwtUtil.extractTokenType(token))) {
                 return ResponseEntity.status(401)
                     .body(ApiResponse.error(
                         "Invalid or expired token. " +
                         "Please login again."));
             }
 
-            Long passengerId =
-                jwtUtil.extractPassengerId(token);
-
             return ResponseEntity.ok(
-                authService.getTotpSetup(passengerId));
+                authService.getTotpSetup(token));
 
         } catch (Exception e) {
             return ResponseEntity.status(400)
@@ -113,5 +118,10 @@ public class AuthController {
             @AuthenticationPrincipal Passenger passenger) {
         return ResponseEntity.ok(
             authService.getProfile(passenger));
+    }
+
+    @PostMapping("/sessions/revoke")
+    public ResponseEntity<?> revokeSessions(@AuthenticationPrincipal Passenger passenger) {
+        return ResponseEntity.ok(authService.revokeSessions(passenger));
     }
 }

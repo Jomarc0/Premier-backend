@@ -39,14 +39,18 @@ public class DriverLocation {
     @Column(nullable = false)
     private Double longitude;
 
-    @Builder.Default
-    private Double speed = 0.0;
+    private Double speed;
 
-    @Builder.Default
-    private Double heading = 0.0;
+    private Double heading;
 
     @Column(name = "recorded_at", nullable = false)
     private LocalDateTime recordedAt;
+    private java.time.Instant capturedAt;
+    private java.time.Instant receivedAt;
+    @Column(length = 80) private String deviceId;
+    private Integer satellites;
+    private Double hdop;
+    private Integer fixType;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

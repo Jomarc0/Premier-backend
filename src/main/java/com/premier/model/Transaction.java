@@ -24,6 +24,8 @@ public class Transaction {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+    @Column(name = "reversal_of_id", unique = true)
+    private Long reversalOfId;
 
     @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
@@ -53,6 +55,12 @@ public class Transaction {
 
     @Column(name = "idempotency_key", length = 120)
     private String idempotencyKey;
+
+    @JsonIgnore @Column(length = 64)
+    private String requestFingerprint;
+
+    @JsonIgnore @Column(columnDefinition = "text")
+    private String responseSnapshot;
 
     @Column(name = "offline_transaction_id", length = 120)
     private String offlineTransactionId;

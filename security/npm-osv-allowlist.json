@@ -1,0 +1,22 @@
+[
+  {
+    "package": "image-size",
+    "version": "1.2.1-premier.1",
+    "advisory": "GHSA-5p2g-fcmc-qvqq",
+    "apps": [
+      "users-mobile"
+    ],
+    "expiresOn": "2026-11-07",
+    "reason": "Expo 54 reaches image-size through Metro during trusted mobile build/export asset processing. As of 2026-09-04, npm publishes image-size 2.0.2 as latest and no fixed release is installable; users-mobile vendors image-size 1.2.1-premier.1 with ICNS/JXL zero-length parser guards and a local regression test."
+  },
+  {
+    "package": "image-size",
+    "version": "1.2.1-premier.1",
+    "advisory": "GHSA-w3rx-r6r6-pgpr",
+    "apps": [
+      "users-mobile"
+    ],
+    "expiresOn": "2026-11-07",
+    "reason": "Expo 54 reaches image-size through Metro during trusted mobile build/export asset processing. As of 2026-09-04, npm publishes image-size 2.0.2 as latest and no fixed release is installable; users-mobile vendors image-size 1.2.1-premier.1 with ICNS/JXL zero-length parser guards and a local regression test."
+  }
+]

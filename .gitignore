@@ -58,3 +58,60 @@ Thumbs.db
 
 # Optional: production secrets
 application-secret.properties
+
+# Local environment variants; commit only reviewed blank examples.
+.env.*
+!.env.example
+!**/.env.example
+.dev.vars
+.dev.vars.*
+
+# JavaScript / Expo / Android generated and machine-local files
+node_modules/
+.expo/
+.gradle/
+.cxx/
+local.properties
+dist/
+coverage/
+.cache/
+*.tsbuildinfo
+*.apk
+*.aab
+*.dex
+*.class
+*.bin
+*.elf
+*.map
+
+# Local credentials and signing material
+**/*service-account*.json
+**/credentials.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets.h
+application-local.properties
+application-local.yml
+application-local.yaml
+application-secret.yml
+application-secret.yaml
+
+# Generated backups, logs and operating-system metadata
+*.dump
+*.sql.gz
+*.sql.zip
+*.bak
+*.tmp
+*.orig
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+desktop.ini
+ehthumbs.db
+
+# Local inspection/prebuild workspaces; preserve locally for comparison.
+/tmp/

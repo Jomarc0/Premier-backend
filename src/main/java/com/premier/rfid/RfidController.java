@@ -33,6 +33,7 @@ public class RfidController {
     private final DriverLocationRepository driverLocationRepository;
     private final RfidUidCaptureService rfidUidCaptureService;
     private final RealtimeEventPublisher realtimeEventPublisher;
+    private final com.premier.device.service.GpsTelemetryService gpsTelemetry;
 
     private static final double SM_LIPA_LAT = 13.954781;
     private static final double SM_LIPA_LNG = 121.163096;
@@ -44,7 +45,7 @@ public class RfidController {
                     request,
                     DeviceContext.get()));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+            throw e; // Preserve typed payment status/code; global handler sanitizes unexpected failures.
         }
     }
 
@@ -55,7 +56,7 @@ public class RfidController {
                     request,
                     DeviceContext.get()));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+            throw e; // Preserve typed payment status/code; global handler sanitizes unexpected failures.
         }
     }
 
@@ -74,7 +75,7 @@ public class RfidController {
                     request,
                     DeviceContext.get()));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+            throw e; // Preserve typed payment status/code; global handler sanitizes unexpected failures.
         }
     }
 
@@ -103,81 +104,12 @@ public class RfidController {
                     (String) body.get("rfidUid"),
                     DeviceContext.get()));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+            throw e; // Preserve typed payment status/code; global handler sanitizes unexpected failures.
         }
     }
 
     @PostMapping("/gps")
-    public ResponseEntity<?> updateVehicleGps(@RequestBody Map<String, Object> body) {
-        try {
-            String plateNumber = ((String) body.get("plateNumber")).toUpperCase().trim();
-            deviceService.requirePlateAssignment(DeviceContext.get(), plateNumber);
-            Double latitude = Double.valueOf(body.get("latitude").toString());
-            Double longitude = Double.valueOf(body.get("longitude").toString());
-            double speed = optionalTelemetry(body, "speed", 0, 300);
-            double heading = optionalTelemetry(body, "heading", 0, 360);
-            deviceService.validateFreshNonce(
-                    DeviceContext.get(),
-                    (String) body.get("requestNonce"),
-                    (String) body.get("requestTimestamp"));
-            if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
-                throw new IllegalArgumentException("Invalid GPS coordinates");
-            }
-
-            Long shiftId = driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
-                    .map(shift -> {
-                        shift.setCurrentLatitude(latitude);
-                        shift.setCurrentLongitude(longitude);
-                        shift.setLastLocationUpdate(LocalDateTime.now());
-                        driverShiftRepository.save(shift);
-
-                        double distLipa = calculateDistance(latitude, longitude, SM_LIPA_LAT, SM_LIPA_LNG);
-                        log.info("GPS UPDATE: {} | Lipa: {}km",
-                                plateNumber, String.format("%.1f", distLipa));
-                        return shift.getId();
-                    })
-                    .orElse(null);
-
-            DriverLocation location = driverLocationRepository.save(DriverLocation.builder()
-                    .plateNumber(plateNumber)
-                    .shiftId(shiftId)
-                    .latitude(latitude)
-                    .longitude(longitude)
-                    .speed(speed)
-                    .heading(heading)
-                    .recordedAt(LocalDateTime.now())
-                    .build());
-            realtimeEventPublisher.admin("VEHICLE_LOCATION_UPDATED", "VEHICLE_LOCATION", location.getId());
-            realtimeEventPublisher.staff("VEHICLE_LOCATION_UPDATED", "VEHICLE_LOCATION", location.getId());
-
-            return ResponseEntity.ok(Map.of("status", "GPS updated", "plateNumber", plateNumber));
-        } catch (Exception e) {
-            log.error("GPS update failed", e);
-            return ResponseEntity.badRequest().body(ApiResponse.error("Invalid GPS data"));
-        }
-    }
-
-    private double calculateDistance(double lat1, double lng1, double lat2, double lng2) {
-        final int radiusKm = 6371;
-        double latDistance = Math.toRadians(lat2 - lat1);
-        double lngDistance = Math.toRadians(lng2 - lng1);
-        double a = Math.sin(latDistance / 2) * Math.sin(latDistance / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(lngDistance / 2) * Math.sin(lngDistance / 2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return radiusKm * c;
-    }
-
-    private double optionalTelemetry(Map<String, Object> body, String field, double min, double max) {
-        Object value = body.get(field);
-        if (value == null) return 0.0;
-        double number = Double.parseDouble(value.toString());
-        if (!Double.isFinite(number) || number < min || number > max) {
-            throw new IllegalArgumentException("Invalid " + field);
-        }
-        return number;
+    public ResponseEntity<?> updateVehicleGps(@jakarta.validation.Valid @RequestBody com.premier.device.request.GpsTelemetryRequest request) {
+        return ResponseEntity.ok(gpsTelemetry.receive(DeviceContext.get(), request));
     }
 }
-
-
-

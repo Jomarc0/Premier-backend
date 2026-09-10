@@ -21,6 +21,28 @@ public class Passenger {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    @JsonIgnore
+    @lombok.ToString.Exclude
+    @Builder.Default
+    private Long version = 0L;
+
+    @JsonIgnore
+    @lombok.ToString.Exclude
+    @Builder.Default
+    @Column(nullable = false)
+    private long sessionVersion = 0;
+
+    @JsonIgnore
+    @lombok.ToString.Exclude
+    @Builder.Default
+    @Column(nullable = false)
+    private int mfaFailures = 0;
+
+    @JsonIgnore
+    @lombok.ToString.Exclude
+    private java.time.Instant mfaLockedUntil;
+
     @Column(nullable = false, precision = 10, scale = 2)
     @Builder.Default
     private BigDecimal balance = INITIAL_CARD_BALANCE;
@@ -29,6 +51,8 @@ public class Passenger {
     private LocalDateTime createdAt;
 
     @Column(name = "fcm_token")
+    @JsonIgnore
+    @lombok.ToString.Exclude
     private String fcmToken;
 
     @Enumerated(EnumType.STRING)
@@ -62,17 +86,9 @@ public class Passenger {
     private Boolean is2FaEnabled = false;
 
     @Column(name = "twofa_secret")
-    private String twofaSecret;
-
     @JsonIgnore
-    @Column(name = "activation_code_hash", length = 255)
-    private String activationCodeHash;
-
-    @Column(name = "activation_expires_at")
-    private LocalDateTime activationExpiresAt;
-
-    @Column(name = "activated_at")
-    private LocalDateTime activatedAt;
+    @lombok.ToString.Exclude
+    private String twofaSecret;
 
     @PrePersist
     protected void onCreate() {

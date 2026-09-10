@@ -1,0 +1,21 @@
+title = "Premier secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Two blank environment assignments incorrectly joined by the generic rule"
+condition = "AND"
+paths = ['''(^|/)\.env\.example$''']
+regexTarget = "match"
+regexes = ['''^[A-Z][A-Z0-9_]*=[\r\n]+[A-Z][A-Z0-9_]*=[\r\n]*$''']
+
+[[rules.allowlists]]
+description = "Exact deterministic TOTP fixture, encoded or decoded, in the isolated test profile"
+condition = "AND"
+paths = ['''(^|/)src/test/resources/application-test\.properties$''']
+regexTarget = "secret"
+regexes = ['''^(MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=|0123456789abcdef0123456789abcdef)$''']

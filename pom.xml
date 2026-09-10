@@ -5,7 +5,7 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>3.2.5</version>
+		<version>4.1.1</version>
 		<relativePath/>
 	</parent>
 	<groupId>com.premier</groupId>
@@ -28,6 +28,8 @@
 	</scm>
 	<properties>
 		<java.version>17</java.version>
+        <!-- OSV/Apache advisories fixed after the Boot 4.1.1 dependency baseline. -->
+        <tomcat.version>11.0.25</tomcat.version>
 	</properties>
 	<!--Google Cloud BOM -->
 	<dependencyManagement>
@@ -35,7 +37,7 @@
 			<dependency>
 				<groupId>com.google.cloud</groupId>
 				<artifactId>libraries-bom</artifactId>
-				<version>26.37.0</version>
+				<version>26.87.0</version>
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
@@ -61,18 +63,7 @@
 		</dependency>
 		<dependency>
 		    <groupId>org.springframework.boot</groupId>
-		    <artifactId>spring-boot-starter-web</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-devtools</artifactId>
-			<scope>runtime</scope>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>com.mysql</groupId>
-			<artifactId>mysql-connector-j</artifactId>
-			<scope>runtime</scope>
+		    <artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 		<dependency>
 		    <groupId>org.postgresql</groupId>
@@ -104,24 +95,24 @@
 		<dependency>
 	        <groupId>io.jsonwebtoken</groupId>
 	        <artifactId>jjwt-api</artifactId>
-	        <version>0.12.3</version>
+	        <version>0.13.0</version>
 	    </dependency>
 	    <dependency>
 	        <groupId>io.jsonwebtoken</groupId>
 	        <artifactId>jjwt-impl</artifactId>
-	        <version>0.12.3</version>
+	        <version>0.13.0</version>
 	        <scope>runtime</scope>
 	    </dependency>
 	    <dependency>
 	        <groupId>io.jsonwebtoken</groupId>
 	        <artifactId>jjwt-jackson</artifactId> 
-	        <version>0.12.3</version>
+	        <version>0.13.0</version>
 	        <scope>runtime</scope>
 	    </dependency>
 	    <dependency>
 		    <groupId>com.google.firebase</groupId>
 		    <artifactId>firebase-admin</artifactId>
-		    <version>9.3.0</version>
+		    <version>9.10.0</version>
 		</dependency>
 		<dependency>
 		    <groupId>dev.samstevens.totp</groupId>
@@ -129,11 +120,6 @@
 		    <version>1.7.1</version>
 		</dependency>
 		<!-- TOTP / Google Authenticator -->
-		<dependency>
-		    <groupId>dev.samstevens.totp</groupId>
-		    <artifactId>totp-spring-boot-starter</artifactId>
-		    <version>1.7.1</version>
-		</dependency>
 		<!-- QR Code Generator -->
 		<dependency>
 		    <groupId>com.google.zxing</groupId>
@@ -155,11 +141,6 @@
 		    <groupId>com.fasterxml.jackson.core</groupId>
 		    <artifactId>jackson-databind</artifactId>
 		</dependency>
-		<dependency>
-		    <groupId>com.github.ulisesbocchio</groupId>
-		    <artifactId>jasypt-spring-boot-starter</artifactId>
-		    <version>3.0.5</version>
-		</dependency>
 		<!-- Dialogflow ES SDK (no version — controlled by BOM) -->
 		<dependency>
 		    <groupId>com.google.cloud</groupId>
@@ -173,6 +154,17 @@
 		    <version>8.10.1</version>
 		</dependency>
 		
+
+        <!-- Preserve the existing Jackson 2 wire contract during the framework upgrade. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId><artifactId>spring-boot-jackson2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc-test</artifactId><scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security-test</artifactId><scope>test</scope>
+        </dependency>
 	</dependencies>
 
 	<build>
@@ -204,7 +196,7 @@
 								<path>
 								    <groupId>org.projectlombok</groupId>
 								    <artifactId>lombok</artifactId>
-								    <version>1.18.30</version>
+								    <version>${lombok.version}</version>
 								</path>
 							</annotationProcessorPaths>
 						</configuration>
@@ -220,7 +212,7 @@
 					            <path>
 					                <groupId>org.projectlombok</groupId>
 					                <artifactId>lombok</artifactId>
-					                <version>1.18.30</version>
+					                <version>${lombok.version}</version>
 					            </path>
 					        </annotationProcessorPaths>
 					    </configuration>

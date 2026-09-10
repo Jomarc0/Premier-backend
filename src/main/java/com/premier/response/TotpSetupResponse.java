@@ -10,6 +10,7 @@ import lombok.*;
 public class TotpSetupResponse {
     private String secret;
     private String qrCodeUrl;
+    private String qrImageDataUri;
     private String manualEntryKey;
 
     @JsonProperty("is2FaEnabled")

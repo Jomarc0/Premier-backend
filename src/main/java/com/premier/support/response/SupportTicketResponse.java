@@ -54,6 +54,15 @@ public class SupportTicketResponse {
                 .build();
     }
 
+    public static SupportTicketResponse forPassenger(SupportTicket ticket) {
+        // Build only passenger fields; never initialize internal admin or credential associations.
+        return SupportTicketResponse.builder().id(ticket.getId()).ticketNumber(ticket.getTicketNumber())
+                .maskedCardNumber(mask(ticket.getCardNumber())).email(ticket.getEmail())
+                .issueType(ticket.getIssueType()).reason(ticket.getReason()).status(ticket.getStatus())
+                .priority(ticket.getPriority()).createdAt(ticket.getCreatedAt()).updatedAt(ticket.getUpdatedAt())
+                .resolvedAt(ticket.getResolvedAt()).build();
+    }
+
     private static String mask(String cardNumber) {
         if (cardNumber == null || cardNumber.length() < 8) return "****";
         return cardNumber.substring(0, 4) + "****" + cardNumber.substring(cardNumber.length() - 4);

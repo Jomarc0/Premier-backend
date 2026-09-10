@@ -8,7 +8,8 @@ public record DevicePrincipal(
         String deviceId,
         DeviceType deviceType,
         Long vehicleId,
-        String plateNumber) {
+        String plateNumber,
+        long credentialVersion) {
 
     public static DevicePrincipal from(Device device) {
         return new DevicePrincipal(
@@ -16,6 +17,6 @@ public record DevicePrincipal(
                 device.getDeviceId(),
                 device.getDeviceType(),
                 device.getVehicleId(),
-                device.getPlateNumber());
+                device.getPlateNumber(), device.getCredentialVersion());
     }
 }

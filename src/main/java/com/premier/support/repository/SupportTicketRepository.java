@@ -14,6 +14,7 @@ import java.util.Optional;
 
 public interface SupportTicketRepository extends JpaRepository<SupportTicket, Long> {
     List<SupportTicket> findAllByOrderByCreatedAtDesc();
+    List<SupportTicket> findTop10ByOrderByCreatedAtDesc();
     long countByStatus(SupportTicketStatus status);
     long countByCreatedAtBetween(LocalDateTime start, LocalDateTime end);
     List<SupportTicket> findByPassengerIdOrderByCreatedAtDesc(Long passengerId);

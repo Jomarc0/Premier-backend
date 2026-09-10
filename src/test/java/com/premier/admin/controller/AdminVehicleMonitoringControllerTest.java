@@ -71,7 +71,7 @@ class AdminVehicleMonitoringControllerTest {
                 .latitude(0.0).longitude(0.0).speed(0.0).recordedAt(date.atTime(8, 10)).build();
         when(vehicleRepository.findByPlateNumber("DAR-5315")).thenReturn(Optional.of(bus));
         when(locationRepository.findByPlateNumberAndRecordedAtBetweenOrderByRecordedAtAsc(
-                eq("DAR-5315"), any(), any())).thenReturn(List.of(valid, zero));
+                eq("DAR-5315"), any(), any(), any())).thenReturn(List.of(valid, zero));
 
         Map<String, Object> data = controller.locationHistory(
                 "dar-5315", date, LocalTime.of(8, 0), LocalTime.of(9, 0), null).getData();
@@ -98,6 +98,30 @@ class AdminVehicleMonitoringControllerTest {
 
         assertThat(row.get("hasValidLocation")).isEqualTo(true);
         assertThat(row.get("status")).isEqualTo("DELAYED");
+    }
+
+    @Test void missingSpeedDoesNotBecomeAStopOrZeroAverage() {
+        DriverLocation point = DriverLocation.builder().id(4L).plateNumber("DAR-5315")
+                .latitude(13.94).longitude(121.12).recordedAt(LocalDateTime.now()).build();
+        when(vehicleRepository.findByPlateNumber("DAR-5315")).thenReturn(Optional.of(bus()));
+        when(locationRepository.findByPlateNumberAndRecordedAtBetweenOrderByRecordedAtAsc(
+                eq("DAR-5315"), any(), any(), any())).thenReturn(List.of(point));
+        var data = controller.locationHistory("DAR-5315", LocalDate.now(), null, null, null).getData();
+        var row = (Map<?, ?>) ((List<?>) data.get("history")).get(0);
+        var summary = (Map<?, ?>) data.get("summary");
+        assertThat(row.get("speed")).isNull();
+        assertThat(row.get("status")).isEqualTo("Unknown");
+        assertThat(summary.get("averageSpeedKmh")).isNull();
+        assertThat(summary.get("numberOfStops")).isNull();
+    }
+
+    @Test void oversizedHistoryRequiresNarrowerRangeInsteadOfSilentTruncation() {
+        when(vehicleRepository.findByPlateNumber("DAR-5315")).thenReturn(Optional.of(bus()));
+        when(locationRepository.findByPlateNumberAndRecordedAtBetweenOrderByRecordedAtAsc(
+                eq("DAR-5315"), any(), any(), any())).thenReturn(java.util.Collections.nCopies(10001, new DriverLocation()));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.locationHistory("DAR-5315", null, null, null, "week"))
+                .isInstanceOf(com.premier.exception.ClientException.class)
+                .extracting("code").isEqualTo("HISTORY_RANGE_TOO_LARGE");
     }
 
     private Vehicle bus() {

@@ -1,0 +1,4 @@
+# Exact historical synthetic fixtures reviewed 2026-09-04. See docs/SECRET_SCAN_REVIEW.md.
+0accbdbceb041c1063cac9dc43f872f8b4777b80:.github/workflows/ci.yml:generic-api-key:35
+6e7322fc451cd6fb29a18681de86afb057c2783f:.env.example:generic-api-key:4
+ed468fd35e052aa74acdbfa8e56a4f7712b196a7:src/test/resources/application-test.properties:generic-api-key:14

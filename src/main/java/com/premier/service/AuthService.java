@@ -3,331 +3,274 @@ package com.premier.service;
 import com.premier.request.*;
 import com.premier.response.*;
 import com.premier.exception.*;
-import com.premier.model.Passenger;
-import com.premier.model.PassengerStatus;
-import com.premier.repository.PassengerRepository;
-import com.premier.security.JwtUtil;
+import com.premier.model.*;
+import com.premier.repository.*;
+import com.premier.security.*;
+import com.premier.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import com.premier.security.TotpSecretCrypto;
-import com.premier.realtime.RealtimeEventPublisher;
-
-import java.time.LocalDateTime;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.*;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
-@Slf4j
 public class AuthService {
-
     private final PassengerRepository passengerRepository;
+    private final AuthChallengeRepository challengeRepository;
+    private final BiometricRefreshTokenRepository biometricRepository;
     private final JwtUtil jwtUtil;
     private final TotpService totpService;
-    private final PasswordEncoder passwordEncoder;
     private final TotpSecretCrypto totpSecretCrypto;
     private final RealtimeEventPublisher realtimeEventPublisher;
-    private final Map<String, Integer> loginAttempts = new ConcurrentHashMap<>();
-    private final Map<String, LocalDateTime> loginCooldowns = new ConcurrentHashMap<>();
-    private static final int MAX_LOGIN_ATTEMPTS = 5;
-    private static final int LOGIN_COOLDOWN_MINUTES = 15;
-    private final Map<Long, Integer> totpFailures = new ConcurrentHashMap<>();
-    private final Map<Long, Instant> totpCooldowns = new ConcurrentHashMap<>();
-    private static final int MAX_TOTP_ATTEMPTS = 3;
-    private static final int MAX_TOTP_COOLDOWN_MINUTES = 15;
+    private final com.premier.admin.repository.AdminRepository adminRepository;
+    private final com.premier.support.repository.SupportTicketRepository supportTickets;
+    private final com.premier.admin.repository.ActivityLogRepository activityLogs;
+    private final FareQrTokenRepository fareTokens;
 
-    //REGISTER 
     @Transactional
-    public ApiResponse<PassengerResponse> register(
-            RegisterRequest request) {
+    public ApiResponse<com.premier.support.response.SupportTicketResponse> openRecoveryTicket(
+            com.premier.admin.model.Admin principal, String cardNumber, String email, String reason) {
+        var admin = requireRecoveryAdmin(principal);
+        if (cardNumber == null || email == null || reason == null || reason.trim().length() < 10 || reason.length() > 500)
+            throw new ClientException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Card, contact email, and support reason are required.");
+        var passenger = passengerRepository.findByCardNumber(cardNumber.trim()).orElseThrow(() ->
+                new ClientException(HttpStatus.NOT_FOUND, "PASSENGER_NOT_FOUND", "Passenger not found."));
+        var ticket = com.premier.support.model.SupportTicket.builder()
+                .ticketNumber("TICKET-" + UUID.randomUUID().toString().replace("-", ""))
+                .passenger(passenger).cardNumber(passenger.getCardNumber()).email(email.trim())
+                .issueType(com.premier.support.model.SupportTicketIssueType.LOGIN_PROBLEM)
+                .reason(reason.trim()).handledBy(admin)
+                .adminNotes("Recovery intake opened by Super Admin. Identity verification is still required; no account access changed.").build();
+        supportTickets.saveAndFlush(ticket);
+        activityLogs.save(com.premier.admin.model.ActivityLog.builder().admin(admin).action("MFA_RECOVERY_INTAKE")
+                .targetType("SUPPORT_TICKET").targetId(ticket.getId()).details("Manual recovery intake; identity verification pending.").build());
+        realtimeEventPublisher.admin("TICKET_CREATED", "SUPPORT_TICKET", ticket.getId());
+        return ApiResponse.success("Verification ticket opened. Complete the approved identity procedure before authorizing recovery.",
+                com.premier.support.response.SupportTicketResponse.from(ticket));
+    }
 
-        Passenger passenger = passengerRepository.findByCardNumber(request.getCardNumber().trim())
-                .orElseThrow(() -> new RuntimeException("Invalid card number or activation code."));
-        if (passenger.getStatus() != PassengerStatus.AVAILABLE
-                || passenger.getActivationCodeHash() == null
-                || passenger.getActivationExpiresAt() == null
-                || passenger.getActivationExpiresAt().isBefore(LocalDateTime.now())
-                || !passwordEncoder.matches(request.getActivationCode(), passenger.getActivationCodeHash())) {
-            throw new RuntimeException("Invalid card number or activation code.");
-        }
+    private com.premier.admin.model.Admin requireRecoveryAdmin(com.premier.admin.model.Admin principal) {
+        if (principal == null || principal.getId() == null) throw invalidChallenge();
+        var admin = adminRepository.findLockedById(principal.getId()).orElseThrow(this::invalidChallenge);
+        if (!admin.isSuperAdmin() || !Boolean.TRUE.equals(admin.getActive()) || admin.isLocked()
+                || !Boolean.TRUE.equals(admin.getIs2FaEnabled()) || admin.getSessionVersion() != principal.getSessionVersion())
+            throw new ClientException(HttpStatus.FORBIDDEN, "FORBIDDEN", "An authorized Super Admin must verify identity.");
+        return admin;
+    }
 
-        String twofaSecret = totpService.generateSecret();
-
-        passenger.setTwofaSecret(totpSecretCrypto.encrypt(twofaSecret));
-        passenger.setIs2FaEnabled(false);
-        passenger.setActivationCodeHash(null);
-        passenger.setActivationExpiresAt(null);
-        passenger.setActivatedAt(LocalDateTime.now());
+    @Transactional
+    public ApiResponse<java.util.Map<String, Object>> authorizeRecovery(com.premier.admin.model.Admin principal,
+            Long ticketId, String reason, boolean identityVerified) {
+        if (principal == null || ticketId == null || !identityVerified || reason == null
+                || reason.trim().length() < 10 || reason.length() > 240) throw invalidChallenge();
+        var admin = requireRecoveryAdmin(principal);
+        var ticket = supportTickets.findByIdForUpdate(ticketId).orElseThrow(this::invalidChallenge);
+        if (ticket.getStatus() == com.premier.support.model.SupportTicketStatus.RESOLVED
+                || ticket.getStatus() == com.premier.support.model.SupportTicketStatus.REJECTED)
+            throw new ClientException(HttpStatus.CONFLICT, "TICKET_CLOSED", "Open a new verification ticket for recovery.");
+        if (ticket.getPassenger() == null || challengeRepository.existsBySupportTicketId(ticketId))
+            throw new ClientException(HttpStatus.CONFLICT, "RECOVERY_ALREADY_AUTHORIZED", "A new verified support ticket is required.");
+        Passenger passenger = passengerRepository.findLockedById(ticket.getPassenger().getId()).orElseThrow(this::invalidChallenge);
+        if (passenger.getStatus() != PassengerStatus.ACTIVE && passenger.getStatus() != PassengerStatus.AVAILABLE)
+            throw new ClientException(HttpStatus.CONFLICT, "ACCOUNT_INACTIVE", "Resolve the card restriction before MFA recovery.");
+        passenger.setSessionVersion(passenger.getSessionVersion() + 1);
+        biometricRepository.revokeAllForPassenger(passenger.getId(), Instant.now());
+        passenger.setTwofaSecret(null); passenger.setIs2FaEnabled(false);
         passenger.setStatus(PassengerStatus.AVAILABLE);
-
+        passenger.setMfaFailures(0); passenger.setMfaLockedUntil(null);
         passengerRepository.save(passenger);
-        realtimeEventPublisher.admin("PASSENGER_UPDATED", "PASSENGER", passenger.getId());
-        log.info("Passenger activated: cardNumber={}",
-            mask(request.getCardNumber()));
-
-        return ApiResponse.success(
-            "Registration successful! " +
-            "Please set up Google Authenticator.",
-            toPassengerResponse(passenger));
+        fareTokens.findByPassengerIdAndStatus(passenger.getId(), FareQrTokenStatus.ACTIVE).forEach(t -> {
+            t.setStatus(FareQrTokenStatus.EXPIRED); fareTokens.save(t);
+        });
+        AuthChallenge recovery = new AuthChallenge(); recovery.setId(UUID.randomUUID().toString());
+        recovery.setPassenger(passenger); recovery.setPurpose("RECOVERY"); recovery.setExpiresAt(Instant.now().plusSeconds(300));
+        recovery.setSessionVersion(passenger.getSessionVersion()); recovery.setSupportTicketId(ticketId); recovery.setAuthorizedBy(admin.getId());
+        challengeRepository.saveAndFlush(recovery);
+        ticket.setAdminNotes((ticket.getAdminNotes() == null ? "" : ticket.getAdminNotes() + "\n")
+                + "MFA recovery: identity verified by Super Admin " + admin.getId() + "; " + reason.trim());
+        ticket.setHandledBy(admin); supportTickets.save(ticket);
+        activityLogs.save(com.premier.admin.model.ActivityLog.builder().admin(admin).action("PASSENGER_MFA_RECOVERY")
+                .targetType("PASSENGER").targetId(passenger.getId()).details("Identity verified; ticket " + ticket.getTicketNumber()
+                        + "; sessions revoked; " + reason.trim()).build());
+        return ApiResponse.success("Deliver this one-use recovery authorization only to the verified passenger.", java.util.Map.of(
+                "recoveryToken", jwtUtil.generateChallenge(passenger.getId(), "RECOVERY", recovery.getId(), recovery.getExpiresAt()),
+                "expiresAt", recovery.getExpiresAt(), "ticketNumber", ticket.getTicketNumber()));
     }
-
-    // LOGIN 
-
-    public ApiResponse<AuthResponse> login(
-            LoginRequest request) {
-        String cardNumber = request.getCardNumber().trim();
-        enforceLoginCooldown(cardNumber);
-
-        Passenger passenger = passengerRepository
-            .findByCardNumber(cardNumber)
-            .orElseThrow(() -> {
-                recordFailedLogin(cardNumber);
-                return new InvalidRfidException(
-                    "Invalid card number or account status.");
-            });
-
-        if (passenger.getStatus() != PassengerStatus.ACTIVE
-                && passenger.getStatus() != PassengerStatus.AVAILABLE) {
-            recordFailedLogin(cardNumber);
-            throw new RuntimeException(
-                "Account is " +
-                passenger.getStatus().name().toLowerCase());
-        }
-
-        clearLoginFailures(cardNumber);
-
-        String tempToken = jwtUtil.generateTempToken(
-            passenger.getId());
-
-        if (!passenger.getIs2FaEnabled()) {
-            return ApiResponse.success(
-                "Please set up Google Authenticator first.",
-                AuthResponse.builder()
-                    .require2FA(true)
-                    .requireSetup(true)
-                    .tempToken(tempToken)
-                    .passengerName("Passenger #" + passenger.getId())
-                    .build());
-        }
-
-        return ApiResponse.success(
-            "2FA required. Enter your code.",
-            AuthResponse.builder()
-                .require2FA(true)
-                .requireSetup(false)
-                .tempToken(tempToken)
-                .passengerName("Passenger #" + passenger.getId())
-                .build());
-    }
-
-    // GET TOTP SETUP 
-
-    public ApiResponse<TotpSetupResponse> getTotpSetup(Long passengerId) {
-        Passenger passenger = passengerRepository
-            .findById(passengerId)
-            .orElseThrow(() -> new PassengerNotFoundException("Passenger not found."));
-
-
-        if (passenger.getTwofaSecret() == null) {
-            String newSecret = totpService.generateSecret();
-            passenger.setTwofaSecret(totpSecretCrypto.encrypt(newSecret));
-            passengerRepository.save(passenger); 
-            log.info("Generated new TOTP secret for passenger: {}", passengerId);
-        }
-
-        String totpSecret = totpSecretCrypto.decrypt(passenger.getTwofaSecret());
-        String qrCodeUrl = totpService.generateQrCodeUrl(
-            totpSecret,
-            "Passenger #" + passenger.getId());
-
-        return ApiResponse.success(
-            "Scan QR code with Google Authenticator.",
-            TotpSetupResponse.builder()
-                .secret(null)
-                .qrCodeUrl(qrCodeUrl)
-                .manualEntryKey(totpSecret)
-                .is2FaEnabled(passenger.getIs2FaEnabled())
-                .build());
-    }
-
-    // VERIFY TOTP
 
     @Transactional
-    public ApiResponse<AuthResponse> verifyTotp(
-            TotpVerifyRequest request) {
+    public ApiResponse<AuthResponse> completeRecovery(String token) {
+        Passenger passenger = lockChallengePassenger(token);
+        AuthChallenge recovery = validChallenge(token, passenger);
+        if (!"RECOVERY".equals(recovery.getPurpose()) || recovery.getSupportTicketId() == null
+                || recovery.getAuthorizedBy() == null || Boolean.TRUE.equals(passenger.getIs2FaEnabled())) throw invalidChallenge();
+        recovery.setUsedAt(Instant.now()); challengeRepository.save(recovery);
+        passenger.setTwofaSecret(totpSecretCrypto.encrypt(totpService.generateSecret()));
+        passengerRepository.save(passenger);
+        return ApiResponse.success("Recovery authorized. Enroll a new authenticator.", challenge(passenger, "ENROLL"));
+    }
 
-        if (request.getTempToken() == null ||
-            request.getTempToken().isBlank()) {
-            throw new InvalidTotpException(
-                "Temp token is missing. Please login again.");
+    @Transactional
+    public ApiResponse<AuthResponse> register(RegisterRequest request) {
+        if (request == null || request.getCardNumber() == null || request.getCardNumber().isBlank()
+                || request.getCardNumber().length() > 100) throw invalidAccount();
+        Passenger passenger = passengerRepository.findLockedByCardNumber(request.getCardNumber().trim())
+                .orElseThrow(this::invalidAccount);
+        if (passenger.getStatus() != PassengerStatus.AVAILABLE || Boolean.TRUE.equals(passenger.getIs2FaEnabled())) {
+            throw invalidAccount();
         }
-
-        if (!jwtUtil.isTokenValid(request.getTempToken()) ||
-            !jwtUtil.isTempToken(request.getTempToken())) {
-            throw new InvalidTotpException(
-                "Session expired. Please login again.");
+        if (passenger.getTwofaSecret() == null) {
+            passenger.setTwofaSecret(totpSecretCrypto.encrypt(totpService.generateSecret()));
         }
+        passenger.setIs2FaEnabled(false);
+        passengerRepository.save(passenger);
+        return ApiResponse.success("Complete authenticator enrollment.", challenge(passenger, "ENROLL"));
+    }
 
-        Long passengerId = jwtUtil.extractPassengerId(
-            request.getTempToken());
-
-        enforceTotpCooldown(passengerId);
-
-        Passenger passenger = passengerRepository
-            .findById(passengerId)
-            .orElseThrow(() ->
-                new PassengerNotFoundException(
-                    "Passenger not found."));
-
-        if (passenger.getStatus() != PassengerStatus.ACTIVE
-                && passenger.getStatus() != PassengerStatus.AVAILABLE) {
-            throw new RuntimeException(
-                "Account is " + passenger.getStatus().name().toLowerCase());
+    @Transactional
+    public ApiResponse<AuthResponse> login(LoginRequest request) {
+        if (request == null || request.getCardNumber() == null || request.getCardNumber().isBlank()
+                || request.getCardNumber().length() > 100) throw invalidChallenge();
+        Passenger passenger = passengerRepository.findLockedByCardNumber(request.getCardNumber().trim())
+                .orElseThrow(() -> new InvalidRfidException("Invalid card number or account status."));
+        if (passenger.getStatus() != PassengerStatus.ACTIVE && passenger.getStatus() != PassengerStatus.AVAILABLE) {
+            throw new InvalidRfidException("Invalid card number or account status.");
         }
-
-
-        boolean isValid = totpService.verifyCode(
-            totpSecretCrypto.decrypt(passenger.getTwofaSecret()),
-            request.getTotpCode());
-
-        if (!isValid) {
-            recordFailedTotp(passengerId);
-            throw new InvalidTotpException(
-                "Invalid code. Please try again.");
+        if (!Boolean.TRUE.equals(passenger.getIs2FaEnabled())) {
+            if (passenger.getTwofaSecret() == null) {
+                passenger.setTwofaSecret(totpSecretCrypto.encrypt(totpService.generateSecret()));
+            }
+            passengerRepository.save(passenger);
+            return ApiResponse.success("Complete authenticator enrollment.", challenge(passenger, "ENROLL"));
         }
+        enforceMfaLock(passenger);
+        return ApiResponse.success("Enter your authenticator code.", challenge(passenger, "TEMP"));
+    }
 
+    private AuthResponse challenge(Passenger passenger, String purpose) {
+        AuthChallenge challenge = new AuthChallenge();
+        challenge.setId(UUID.randomUUID().toString());
+        challenge.setPassenger(passenger);
+        challenge.setPurpose(purpose);
+        challenge.setExpiresAt(Instant.now().plusSeconds(300));
+        challenge.setSessionVersion(passenger.getSessionVersion());
+        challengeRepository.save(challenge);
+        return AuthResponse.builder().require2FA(true).requireSetup("ENROLL".equals(purpose))
+                .tempToken(jwtUtil.generateChallenge(passenger.getId(), purpose, challenge.getId(), challenge.getExpiresAt()))
+                .passengerName("Passenger #" + passenger.getId()).build();
+    }
+
+    @Transactional
+    public ApiResponse<TotpSetupResponse> getTotpSetup(String token) {
+        Passenger passenger = lockChallengePassenger(token);
+        AuthChallenge challenge = validChallenge(token, passenger);
+        if (!"ENROLL".equals(challenge.getPurpose()) || Boolean.TRUE.equals(passenger.getIs2FaEnabled())
+                || passenger.getTwofaSecret() == null) {
+            throw invalidChallenge();
+        }
+        String secret = totpSecretCrypto.decrypt(passenger.getTwofaSecret());
+        return ApiResponse.success("Scan this code in your authenticator during this enrollment session.",
+                TotpSetupResponse.builder().manualEntryKey(secret)
+                        .qrImageDataUri(totpService.generateQrImageDataUri(secret, "Passenger #" + passenger.getId()))
+                        .qrCodeUrl(totpService.generateQrCodeUrl(secret, "Passenger #" + passenger.getId()))
+                        .is2FaEnabled(false).build());
+    }
+
+    // Failed MFA counters must commit; no financial state is changed in this transaction.
+    @Transactional(noRollbackFor = InvalidTotpException.class)
+    public ApiResponse<AuthResponse> verifyTotp(TotpVerifyRequest request) {
+        Passenger passenger = lockChallengePassenger(request.getTempToken());
+        AuthChallenge challenge = validChallenge(request.getTempToken(), passenger);
+        enforceMfaLock(passenger);
+        boolean enrollment = "ENROLL".equals(challenge.getPurpose());
+        if (!enrollment && !"TEMP".equals(challenge.getPurpose())) throw invalidChallenge();
+        if ((enrollment && Boolean.TRUE.equals(passenger.getIs2FaEnabled()))
+                || (!enrollment && !Boolean.TRUE.equals(passenger.getIs2FaEnabled()))) {
+            throw invalidChallenge();
+        }
+        if (request.getTotpCode() == null || !request.getTotpCode().matches("[0-9]{6}")
+                || passenger.getTwofaSecret() == null
+                || !totpService.verifyCode(totpSecretCrypto.decrypt(passenger.getTwofaSecret()), request.getTotpCode())) {
+            passenger.setMfaFailures(passenger.getMfaFailures() + 1);
+            if (passenger.getMfaFailures() >= 3) {
+                passenger.setMfaLockedUntil(Instant.now().plusSeconds(60L * Math.min(15, passenger.getMfaFailures() - 2)));
+            }
+            passengerRepository.saveAndFlush(passenger);
+            enforceMfaLock(passenger);
+            throw new InvalidTotpException("Invalid authenticator code.");
+        }
+        challenge.setUsedAt(Instant.now());
+        challengeRepository.save(challenge);
+        passenger.setMfaFailures(0);
+        passenger.setMfaLockedUntil(null);
+        if (enrollment) {
+            passenger.setIs2FaEnabled(true);
+            passenger.setStatus(PassengerStatus.ACTIVE);
+        }
         if (!totpSecretCrypto.isEncrypted(passenger.getTwofaSecret())) {
             passenger.setTwofaSecret(totpSecretCrypto.encrypt(passenger.getTwofaSecret()));
         }
-
-        clearTotpFailures(passengerId);
-
-        if (!passenger.getIs2FaEnabled()) {
-            passenger.setIs2FaEnabled(true);
-            log.info("2FA enabled for passenger: {}", passenger.getId());
-        }
-
-        if (passenger.getStatus() == PassengerStatus.AVAILABLE) {
-            passenger.setStatus(PassengerStatus.ACTIVE);
-            log.info("Activated newly issued passenger card: {}", passenger.getId());
-        }
         passengerRepository.save(passenger);
         realtimeEventPublisher.adminAndPassenger(passenger.getId(), "PASSENGER_UPDATED", "PASSENGER", passenger.getId());
-
-        String fullToken = jwtUtil.generateFullToken(
-            passenger.getId());
-
-        return ApiResponse.success(
-            "Login successful!",
-            AuthResponse.builder()
-                .token(fullToken)
-                .require2FA(false)
-                .passengerName("Passenger #" + passenger.getId())
-                .passengerId(passenger.getId())
-                .build());
+        return ApiResponse.success("Login successful.", AuthResponse.builder()
+                .token(jwtUtil.generateFullToken(passenger.getId())).require2FA(false)
+                .passengerId(passenger.getId()).passengerName("Passenger #" + passenger.getId()).build());
     }
 
-    // PROFILE
-
-    public ApiResponse<PassengerResponse> getProfile(
-            Passenger passenger) {
-        return ApiResponse.success(
-            "Profile fetched.",
-            toPassengerResponse(passenger));
+    private Passenger lockChallengePassenger(String token) {
+        if (!jwtUtil.isTokenValid(token)) throw invalidChallenge();
+        String purpose = jwtUtil.extractTokenType(token);
+        if (!"TEMP".equals(purpose) && !"ENROLL".equals(purpose) && !"RECOVERY".equals(purpose)) throw invalidChallenge();
+        return passengerRepository.findLockedById(jwtUtil.extractPassengerId(token)).orElseThrow(this::invalidChallenge);
     }
 
-    //HELPERS 
-
-    private PassengerResponse toPassengerResponse(Passenger p) {
-        return PassengerResponse.builder()
-                .id(p.getId())
-                .balance(p.getBalance())
-                .cardNumber(mask(p.getCardNumber()))
-                .rfidUid(null)
-                .is2FaEnabled(p.getIs2FaEnabled())  
-                .status(p.getStatus())
-                .createdAt(p.getCreatedAt())
-                .build();
-    }
-
-    private String mask(String value) {
-        if (value == null || value.isBlank()) return null;
-        String trimmed = value.trim();
-        int visible = Math.min(4, trimmed.length());
-        return "****" + trimmed.substring(trimmed.length() - visible);
-    }
-
-    private void enforceLoginCooldown(String cardNumber) {
-        LocalDateTime lockedUntil = loginCooldowns.get(cardNumber);
-        if (lockedUntil != null && lockedUntil.isAfter(LocalDateTime.now())) {
-            throw new RuntimeException("Too many login attempts. Please try again later.");
+    private AuthChallenge validChallenge(String token, Passenger passenger) {
+        String id = jwtUtil.challengeId(token);
+        if (id == null) throw invalidChallenge();
+        AuthChallenge challenge = challengeRepository.findById(id).orElseThrow(this::invalidChallenge);
+        if (!challenge.getPassenger().getId().equals(passenger.getId())
+                || !challenge.getPurpose().equals(jwtUtil.extractTokenType(token))
+                || challenge.getSessionVersion() != passenger.getSessionVersion()
+                || challenge.getUsedAt() != null || !challenge.getExpiresAt().isAfter(Instant.now())
+                || (passenger.getStatus() != PassengerStatus.ACTIVE && passenger.getStatus() != PassengerStatus.AVAILABLE)) {
+            throw invalidChallenge();
         }
-        if (lockedUntil != null) {
-            loginCooldowns.remove(cardNumber);
-            loginAttempts.remove(cardNumber);
+        return challenge;
+    }
+
+    private void enforceMfaLock(Passenger passenger) {
+        if (passenger.getMfaLockedUntil() != null && passenger.getMfaLockedUntil().isAfter(Instant.now())) {
+            throw new InvalidTotpException("Too many incorrect codes. Please try again later.",
+                    Math.max(1, Duration.between(Instant.now(), passenger.getMfaLockedUntil()).toSeconds()));
         }
     }
 
-    private void recordFailedLogin(String cardNumber) {
-        int attempts = loginAttempts.merge(cardNumber, 1, Integer::sum);
-        if (attempts >= MAX_LOGIN_ATTEMPTS) {
-            loginCooldowns.put(cardNumber,
-                LocalDateTime.now().plusMinutes(LOGIN_COOLDOWN_MINUTES));
-            log.warn("Passenger login temporarily locked for card={}", mask(cardNumber));
-        }
+    @Transactional
+    public ApiResponse<Void> revokeSessions(Passenger principal) {
+        if (principal == null) throw invalidChallenge();
+        Passenger passenger = passengerRepository.findLockedById(principal.getId()).orElseThrow(this::invalidChallenge);
+        passenger.setSessionVersion(passenger.getSessionVersion() + 1);
+        passengerRepository.save(passenger);
+        biometricRepository.revokeAllForPassenger(passenger.getId(), Instant.now());
+        return ApiResponse.success("All sessions revoked.");
     }
 
-    private void clearLoginFailures(String cardNumber) {
-        loginAttempts.remove(cardNumber);
-        loginCooldowns.remove(cardNumber);
+    public ApiResponse<PassengerResponse> getProfile(Passenger passenger) {
+        if (passenger == null) throw invalidChallenge();
+        String card = passenger.getCardNumber();
+        String masked = card == null ? null : "****" + card.substring(Math.max(0, card.length() - 4));
+        return ApiResponse.success("Profile fetched.", PassengerResponse.builder()
+                .id(passenger.getId()).balance(passenger.getBalance()).cardNumber(masked).rfidUid(null)
+                .is2FaEnabled(passenger.getIs2FaEnabled()).status(passenger.getStatus())
+                .createdAt(passenger.getCreatedAt()).build());
     }
 
-    private void enforceTotpCooldown(Long passengerId) {
-        Instant lockedUntil = totpCooldowns.get(passengerId);
-        if (lockedUntil == null) return;
-
-        Instant now = Instant.now();
-        if (lockedUntil.isAfter(now)) {
-            long retryAfterSeconds = Math.max(
-                1,
-                (Duration.between(now, lockedUntil).toMillis() + 999) / 1000);
-            throw new InvalidTotpException(
-                "Too many incorrect codes. Try again in " + retryAfterSeconds + " seconds.",
-                retryAfterSeconds);
-        }
-
-        totpCooldowns.remove(passengerId);
+    private ClientException invalidAccount() {
+        return new ClientException(HttpStatus.UNAUTHORIZED, "INVALID_ACCOUNT", "Invalid card number or account status.");
     }
-
-    private void recordFailedTotp(Long passengerId) {
-        int failures = totpFailures.merge(passengerId, 1, Integer::sum);
-        if (failures < MAX_TOTP_ATTEMPTS) return;
-
-        int cooldownMinutes = Math.min(
-            failures - MAX_TOTP_ATTEMPTS + 1,
-            MAX_TOTP_COOLDOWN_MINUTES);
-        Instant lockedUntil = Instant.now().plusSeconds(cooldownMinutes * 60L);
-        totpCooldowns.put(passengerId, lockedUntil);
-
-        log.warn(
-            "Passenger TOTP temporarily locked: passengerId={}, failures={}, cooldownMinutes={}",
-            passengerId,
-            failures,
-            cooldownMinutes);
-
-        throw new InvalidTotpException(
-            "Too many incorrect codes. Try again in " + cooldownMinutes +
-                (cooldownMinutes == 1 ? " minute." : " minutes."),
-            cooldownMinutes * 60L);
-    }
-
-    private void clearTotpFailures(Long passengerId) {
-        totpFailures.remove(passengerId);
-        totpCooldowns.remove(passengerId);
+    private ClientException invalidChallenge() {
+        return new ClientException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid, expired or completed authentication challenge.");
     }
 }
+
