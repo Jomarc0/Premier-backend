@@ -5,6 +5,7 @@ import com.premier.response.ApiResponse;
 import com.premier.service.BalanceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.CacheControl;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,5 +28,20 @@ public class BalanceController {
 
         return ResponseEntity.ok(
             balanceService.getBalance(passenger));
+    }
+
+    @GetMapping("/card-number")
+    public ResponseEntity<?> getCardNumber(
+            @AuthenticationPrincipal Passenger passenger) {
+
+        if (passenger == null) {
+            return ResponseEntity.status(401)
+                .body(ApiResponse.error(
+                    "Unauthorized - please login again"));
+        }
+
+        return ResponseEntity.ok()
+            .cacheControl(CacheControl.noStore())
+            .body(balanceService.getCardNumber(passenger));
     }
 }
