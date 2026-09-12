@@ -47,6 +47,9 @@ public class PaymentNotificationService {
                 passengers.findById(claimed.getPassengerId()).map(p -> p.getFcmToken()).ifPresent(destinations::add);
                 tokens.findTop11ByPassengerIdOrderByUpdatedAtDesc(claimed.getPassengerId()).forEach(t -> destinations.add(t.getFcmToken()));
                 destinations.removeIf(t -> t == null || t.isBlank());
+                if (destinations.isEmpty()) {
+                    throw new IllegalStateException("No registered notification destination.");
+                }
                 if (destinations.size() > 10) {
                     review = true;
                     throw new IllegalStateException("Notification destination limit exceeded.");

@@ -74,6 +74,25 @@ class FareIntegrityRegressionTest {
     long ledgerCount(Passenger passenger) {
         return transactions.findByPassengerIdOrderByCreatedAtDesc(passenger.getId(), org.springframework.data.domain.PageRequest.of(0, 200)).getTotalElements();
     }
+    @Test void successfulRfidFareCreatesOnePassengerNotification() {
+        var passenger = passenger("200.00");
+        passenger.setRfidUid(UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase());
+        passenger = passengers.saveAndFlush(passenger);
+        var payment = fares.processRfidPayment(passenger.getRfidUid(), "TEST-01").getData();
+        Long passengerId = passenger.getId();
+
+        var passengerNotifications = notifications.findAll().stream()
+                .filter(notification -> notification.getPassengerId().equals(passengerId))
+                .toList();
+
+        assertThat(payment.getSource()).isEqualTo("RFID");
+        assertThat(payment.getRemainingBalance()).isEqualByComparingTo("140.00");
+        assertThat(passengerNotifications).singleElement().satisfies(notification -> {
+            assertThat(notification.getKind()).isEqualTo("FARE");
+            assertThat(notification.getReference()).isEqualTo(payment.getReferenceNumber());
+            assertThat(notification.getStatus()).isEqualTo("PENDING");
+        });
+    }
     @ParameterizedTest @ValueSource(ints = {2, 10, 100})
     void oneQrAllowsOnlyOneFareAcrossTerminals(int count) throws Exception {
         var passenger = passenger("6000.00");

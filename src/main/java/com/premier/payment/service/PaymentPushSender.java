@@ -10,6 +10,13 @@ public class PaymentPushSender {
         var delivery = FirebaseMessaging.getInstance().sendAsync(Message.builder().setToken(destination)
             .setNotification(Notification.builder().setTitle("Premier payment update")
                 .setBody("Open Premier to view your payment status.").build())
+            .setAndroidConfig(AndroidConfig.builder()
+                .setPriority(AndroidConfig.Priority.HIGH)
+                .setNotification(AndroidNotification.builder()
+                    .setChannelId("default")
+                    .setSound("default")
+                    .build())
+                .build())
             .putData("type", kind).putData("reference", reference).build());
         try { delivery.get(timeoutMillis, TimeUnit.MILLISECONDS); }
         catch (Exception failure) { delivery.cancel(true); throw failure; }

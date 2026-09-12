@@ -67,6 +67,14 @@ class PaymentNotificationRegressionTest {
         assertThat(notice.getAttempts()).isEqualTo(1);
         assertThat(notice.getDueAt()).isAfter(Instant.now());
     }
+    @Test void missingDeviceTokenRetainsRetryableIntent() {
+        when(tokens.findTop11ByPassengerIdOrderByUpdatedAtDesc(2L)).thenReturn(List.of());
+        service.deliverPending();
+        assertThat(notice.getStatus()).isEqualTo("PENDING");
+        assertThat(notice.getAttempts()).isEqualTo(1);
+        assertThat(notice.getDueAt()).isAfter(Instant.now());
+        verifyNoInteractions(push);
+    }
     @Test void interruptionPreservesLeaseAndInterruptFlag() throws Exception {
         doThrow(new InterruptedException()).when(push).send(anyString(), anyString(), anyString(), anyLong());
         try {
