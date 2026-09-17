@@ -25,14 +25,15 @@ public class FirebaseConfig {
     public void initFirebase() {
         try {
             if (FirebaseApp.getApps().isEmpty()) {
-                InputStream stream = getConfigStream();
-                
-                FirebaseOptions options = FirebaseOptions.builder()
-                    .setCredentials(GoogleCredentials.fromStream(stream))
-                    .build();
-
-                FirebaseApp.initializeApp(options);
-                log.info("Firebase initialized from: {}", firebaseConfigPath);
+                try (InputStream stream = getConfigStream()) {
+                    GoogleCredentials credentials = GoogleCredentials.fromStream(stream);
+                    FirebaseOptions.Builder options = FirebaseOptions.builder().setCredentials(credentials);
+                    if (credentials instanceof com.google.auth.oauth2.ServiceAccountCredentials account) {
+                        options.setProjectId(account.getProjectId());
+                    }
+                    FirebaseApp.initializeApp(options.build());
+                    log.info("Firebase initialized project={}", FirebaseApp.getInstance().getOptions().getProjectId());
+                }
             }
         } catch (IOException e) {
             log.error("Firebase init failed: {}", e.getMessage());

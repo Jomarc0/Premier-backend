@@ -23,7 +23,9 @@ public class FirebaseService {
     public void sendNotification(Passenger passenger, String title, String body, Map<String, String> data) {
         if (passenger == null || passenger.getId() == null) return;
         java.util.LinkedHashSet<String> tokens = new java.util.LinkedHashSet<>();
-        if (passenger.getFcmToken() != null && !passenger.getFcmToken().isBlank()) tokens.add(passenger.getFcmToken());
+        if (passenger.getFcmToken() != null && !passenger.getFcmToken().isBlank()
+                && passengerFcmTokenRepository.findByFcmToken(passenger.getFcmToken())
+                    .map(t -> t.getPassenger().getId().equals(passenger.getId())).orElse(true)) tokens.add(passenger.getFcmToken());
         passengerFcmTokenRepository.findByPassengerId(passenger.getId()).stream()
                 .map(com.premier.model.PassengerFcmToken::getFcmToken)
                 .filter(token -> token != null && !token.isBlank())
@@ -92,8 +94,8 @@ public class FirebaseService {
             log.info("Notification sent: {}", response);
 
         } catch (FirebaseMessagingException e) {
-            log.error("FCM send failed: {}",
-                e.getMessage());
+            log.error("FCM send failed: code={} httpStatus={}",
+                com.premier.payment.service.FcmDiagnostics.code(e), com.premier.payment.service.FcmDiagnostics.httpStatus(e));
         }
     }
 
@@ -130,8 +132,8 @@ public class FirebaseService {
                 tokens.size());
 
         } catch (FirebaseMessagingException e) {
-            log.error("❌ Multicast failed: {}",
-                e.getMessage());
+            log.error("Multicast failed: code={} httpStatus={}",
+                com.premier.payment.service.FcmDiagnostics.code(e), com.premier.payment.service.FcmDiagnostics.httpStatus(e));
         }
     }
 
@@ -203,21 +205,25 @@ public class FirebaseService {
 
     //  UPDATE FCM TOKEN 
 
+    @org.springframework.transaction.annotation.Transactional
     public ApiResponse<String> updateFcmToken(
             Passenger passenger,
             FcmTokenRequest request) {
 
+        // This table owns account association; clear legacy copies without merging a stale wallet entity.
+        passengerRepository.clearLegacyFcmToken(request.getFcmToken());
         passengerFcmTokenRepository.findByFcmToken(request.getFcmToken())
                 .ifPresentOrElse(existing -> {
                     if (!existing.getPassenger().getId().equals(passenger.getId())) {
                         existing.setPassenger(passenger);
                     }
+                    existing.setUpdatedAt(java.time.LocalDateTime.now());
                     passengerFcmTokenRepository.save(existing);
                 }, () -> passengerFcmTokenRepository.save(com.premier.model.PassengerFcmToken.builder()
                         .passenger(passenger).fcmToken(request.getFcmToken()).build()));
 
         
-        log.info("FCM token updated for passenger: ID={}", 
+        log.debug("FCM token updated for passenger: ID={}",
             passenger.getId());
 
         return ApiResponse.success(
@@ -225,6 +231,14 @@ public class FirebaseService {
     }
 
     //  SEND TO ALL 
+
+    @org.springframework.transaction.annotation.Transactional
+    public ApiResponse<String> removeFcmToken(Passenger passenger, FcmTokenRequest request) {
+        passengerFcmTokenRepository.deleteOwnedToken(passenger.getId(), request.getFcmToken());
+        // Registration may have moved to another account since logout began.
+        passengerRepository.clearOwnedLegacyFcmToken(passenger.getId(), request.getFcmToken());
+        return ApiResponse.success("Device notification registration removed.", "OK");
+    }
 
     public void broadcastToAll(
             String title, String body) {

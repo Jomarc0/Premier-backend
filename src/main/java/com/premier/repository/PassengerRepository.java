@@ -31,4 +31,12 @@ public interface PassengerRepository
 
     boolean existsByCardNumber(String cardNumber);
     boolean existsByRfidUid(String rfidUid);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("update Passenger p set p.fcmToken = null, p.version = p.version + 1 where p.fcmToken = :token")
+    int clearLegacyFcmToken(@Param("token") String token);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("update Passenger p set p.fcmToken = null, p.version = p.version + 1 where p.id = :passengerId and p.fcmToken = :token")
+    int clearOwnedLegacyFcmToken(@Param("passengerId") Long passengerId, @Param("token") String token);
 }

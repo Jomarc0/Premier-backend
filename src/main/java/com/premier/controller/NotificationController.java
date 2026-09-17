@@ -21,24 +21,16 @@ public class NotificationController {
     public ResponseEntity<?> updateFcmToken(
             @AuthenticationPrincipal Passenger passenger,
             @Valid @RequestBody FcmTokenRequest request) {
+        if (passenger == null) return ResponseEntity.status(401).build();
         return ResponseEntity.ok(
             firebaseService.updateFcmToken(
                 passenger, request));
     }
 
-    @PostMapping("/test")
-    public ResponseEntity<?> testNotification(
-            @AuthenticationPrincipal Passenger passenger) {
-        if (passenger.getFcmToken() != null) {
-            firebaseService.sendNotification(
-                passenger.getFcmToken(),
-                "Test Notification 🔔",
-                "This is a test from Premier Transit!"
-            );
-            return ResponseEntity.ok(
-                "Notification sent!");
-        }
-        return ResponseEntity.ok(
-            "No FCM token registered.");
+    @DeleteMapping("/fcm-token")
+    public ResponseEntity<?> removeFcmToken(@AuthenticationPrincipal Passenger passenger,
+            @Valid @RequestBody FcmTokenRequest request) {
+        if (passenger == null) return ResponseEntity.status(401).build();
+        return ResponseEntity.ok(firebaseService.removeFcmToken(passenger, request));
     }
 }

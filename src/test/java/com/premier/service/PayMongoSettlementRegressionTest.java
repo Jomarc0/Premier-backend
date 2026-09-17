@@ -33,6 +33,7 @@ class PayMongoSettlementRegressionTest {
     @Autowired ProviderEventRepository events;
     @Autowired RestTemplate rest;
     @Autowired ObjectMapper mapper;
+    @Autowired com.premier.payment.repository.PaymentNotificationRepository notifications;
     MockRestServiceServer server;
 
     @BeforeEach void setup() { server = MockRestServiceServer.bindTo(rest).build(); }
@@ -74,6 +75,12 @@ class PayMongoSettlementRegressionTest {
         assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("220.00");
         assertThat(count(passenger)).isEqualTo(1); assertThat(events.findById(event)).isPresent();
         assertThat(paymongo.processPayment(passenger, request.getReferenceNumber()).getData().get("newBalance")).isEqualTo(new BigDecimal("220.00"));
+        assertThat(notifications.findAll().stream().filter(n -> n.getReference().equals(request.getReferenceNumber())).toList())
+                .singleElement().satisfies(n -> {
+                    assertThat(n.getPassengerId()).isEqualTo(passenger.getId());
+                    assertThat(n.getKind()).isEqualTo("TOPUP");
+                    assertThat(n.getStatus()).isEqualTo("PENDING");
+                });
     }
     @Test void invalidSignatureTimestampModeAndTamperedBodyNeverCredit() throws Exception {
         var passenger = passenger(); var request = pending(passenger);
