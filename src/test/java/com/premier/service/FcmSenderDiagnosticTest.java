@@ -15,6 +15,57 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 
 class FcmSenderDiagnosticTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "TOPUP,TOPUP,100,240,Top-up successful,\u20b1100.00 added. New balance: \u20b1240.00.",
+        "FARE,FARE_DEDUCTION,48,152,Fare deducted,\u20b148.00 paid. Remaining balance: \u20b1152.00."
+    })
+    void paymentTextUsesOwnedLedgerAmountAndClosingBalance(String kind, TransactionType type,
+            String amount, String balance, String title, String body) throws Exception {
+        var repository = mock(com.premier.repository.TransactionRepository.class);
+        var owner = new Passenger(); owner.setId(2L); owner.setBalance(new java.math.BigDecimal("9999.00"));
+        var transaction = Transaction.builder().passenger(owner).type(type).status(TransactionStatus.SUCCESS)
+                .amount(new java.math.BigDecimal(amount)).balanceAfter(new java.math.BigDecimal(balance)).build();
+        when(repository.findByReferenceNumberAndPassengerId("synthetic-reference", 2L)).thenReturn(Optional.of(transaction));
+        var messaging = mock(FirebaseMessaging.class);
+        when(messaging.sendAsync(any(Message.class))).thenReturn(ApiFutures.immediateFuture("projects/synthetic/messages/1"));
+        try (var firebase = mockStatic(FirebaseMessaging.class)) {
+            firebase.when(FirebaseMessaging::getInstance).thenReturn(messaging);
+            new PaymentPushSender(repository).sendPayment(2L, "synthetic-device", kind, "synthetic-reference", 1000);
+        }
+        var message = org.mockito.ArgumentCaptor.forClass(Message.class); verify(messaging).sendAsync(message.capture());
+        var payload = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                com.google.api.client.json.gson.GsonFactory.getDefaultInstance().toString(message.getValue()));
+        assertThat(payload.at("/notification/title").asText()).isEqualTo(title);
+        assertThat(payload.at("/notification/body").asText()).isEqualTo(body).doesNotContain("9999");
+        assertThat(payload.at("/android/notification/channel_id").asText()).isEqualTo("default");
+        assertThat(payload.at("/data/type").asText()).isEqualTo(kind);
+        assertThat(payload.at("/data/reference").asText()).isEqualTo("synthetic-reference");
+        verify(repository).findByReferenceNumberAndPassengerId("synthetic-reference", 2L);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"missing", "incomplete", "failed", "wrong-kind"})
+    void unavailableOrIncompatibleDetailsKeepGenericNotification(String scenario) throws Exception {
+        var repository = mock(com.premier.repository.TransactionRepository.class);
+        var transaction = Transaction.builder().type("wrong-kind".equals(scenario) ? TransactionType.TOPUP : TransactionType.FARE_DEDUCTION)
+                .status("failed".equals(scenario) ? TransactionStatus.FAILED : TransactionStatus.SUCCESS)
+                .amount(new java.math.BigDecimal("60.00"))
+                .balanceAfter("incomplete".equals(scenario) ? null : new java.math.BigDecimal("140.00")).build();
+        when(repository.findByReferenceNumberAndPassengerId("synthetic-reference", 2L))
+                .thenReturn("missing".equals(scenario) ? Optional.empty() : Optional.of(transaction));
+        var messaging = mock(FirebaseMessaging.class);
+        when(messaging.sendAsync(any(Message.class))).thenReturn(ApiFutures.immediateFuture("projects/synthetic/messages/1"));
+        try (var firebase = mockStatic(FirebaseMessaging.class)) {
+            firebase.when(FirebaseMessaging::getInstance).thenReturn(messaging);
+            new PaymentPushSender(repository).sendPayment(2L, "synthetic-device", "FARE", "synthetic-reference", 1000);
+        }
+        var message = org.mockito.ArgumentCaptor.forClass(Message.class); verify(messaging).sendAsync(message.capture());
+        var payload = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                com.google.api.client.json.gson.GsonFactory.getDefaultInstance().toString(message.getValue()));
+        assertThat(payload.at("/notification/body").asText()).isEqualTo("Open Premier to view your payment status.");
+    }
+
     @Test void sdkMessageContainsAndroidDisplayPayloadAndStringData() throws Exception {
         var messaging = mock(FirebaseMessaging.class);
         when(messaging.sendAsync(any(Message.class))).thenAnswer(invocation -> {
@@ -29,7 +80,7 @@ class FcmSenderDiagnosticTest {
         });
         try (var firebase = mockStatic(FirebaseMessaging.class)) {
             firebase.when(FirebaseMessaging::getInstance).thenReturn(messaging);
-            assertThat(new PaymentPushSender().send("synthetic-device", "FARE", "synthetic-reference", 1000))
+            assertThat(new PaymentPushSender(mock(com.premier.repository.TransactionRepository.class)).send("synthetic-device", "FARE", "synthetic-reference", 1000))
                     .isEqualTo("projects/synthetic/messages/1");
         }
     }

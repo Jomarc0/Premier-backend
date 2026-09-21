@@ -58,10 +58,10 @@ class PaymentNotificationRegressionTest {
         service.deliverPending();
         assertThat(newer.getStatus()).isEqualTo("PENDING");
         assertThat(newer.getAttempts()).isEqualTo(2);
-        verify(push).send(eq("synthetic-token"), eq("TOPUP"), eq("synthetic-reference"), longThat(ms -> ms > 0 && ms <= 10000));
+        verify(push).sendPayment(eq(2L), eq("synthetic-token"), eq("TOPUP"), eq("synthetic-reference"), longThat(ms -> ms > 0 && ms <= 10000));
     }
     @Test void providerFailureRetainsRetryableIntent() throws Exception {
-        doThrow(new java.util.concurrent.TimeoutException()).when(push).send(anyString(), anyString(), anyString(), anyLong());
+        doThrow(new java.util.concurrent.TimeoutException()).when(push).sendPayment(eq(2L), anyString(), anyString(), anyString(), anyLong());
         service.deliverPending();
         assertThat(notice.getStatus()).isEqualTo("PENDING");
         assertThat(notice.getAttempts()).isEqualTo(1);
@@ -83,25 +83,25 @@ class PaymentNotificationRegressionTest {
         var unregistered = mock(com.google.firebase.messaging.FirebaseMessagingException.class);
         when(unregistered.getMessagingErrorCode()).thenReturn(com.google.firebase.messaging.MessagingErrorCode.UNREGISTERED);
         doThrow(new java.util.concurrent.ExecutionException(unregistered)).when(push)
-            .send(eq(stale), anyString(), anyString(), anyLong());
+            .sendPayment(eq(2L), eq(stale), anyString(), anyString(), anyLong());
         service.deliverPending();
-        verify(push).send(eq(current), eq("TOPUP"), eq("synthetic-reference"), anyLong());
+        verify(push).sendPayment(eq(2L), eq(current), eq("TOPUP"), eq("synthetic-reference"), anyLong());
         assertThat(notice.getStatus()).isEqualTo("DELIVERED");
         verify(tokens).deleteOwnedToken(2L, stale);
         verify(passengers).clearLegacyFcmToken(stale);
     }
     @Test void temporaryFailureStillAttemptsOtherDevicesWithoutDeletingTokens() throws Exception {
         when(tokens.findTop11ByPassengerIdOrderByUpdatedAtDesc(2L)).thenReturn(List.of(token("synthetic-failed"), token("synthetic-good")));
-        doThrow(new java.util.concurrent.TimeoutException()).when(push).send(eq("synthetic-failed"), anyString(), anyString(), anyLong());
+        doThrow(new java.util.concurrent.TimeoutException()).when(push).sendPayment(eq(2L), eq("synthetic-failed"), anyString(), anyString(), anyLong());
         service.deliverPending();
-        verify(push).send(eq("synthetic-good"), anyString(), anyString(), anyLong());
+        verify(push).sendPayment(eq(2L), eq("synthetic-good"), anyString(), anyString(), anyLong());
         verify(tokens, never()).deleteOwnedToken(anyLong(), anyString());
         assertThat(notice.getStatus()).isEqualTo("PENDING");
     }
     @Test void invalidArgumentIsNotProofOfAnExpiredToken() throws Exception {
         var failure = mock(com.google.firebase.messaging.FirebaseMessagingException.class);
         when(failure.getMessagingErrorCode()).thenReturn(com.google.firebase.messaging.MessagingErrorCode.INVALID_ARGUMENT);
-        doThrow(new java.util.concurrent.ExecutionException(failure)).when(push).send(anyString(), anyString(), anyString(), anyLong());
+        doThrow(new java.util.concurrent.ExecutionException(failure)).when(push).sendPayment(eq(2L), anyString(), anyString(), anyString(), anyLong());
         service.deliverPending();
         verify(tokens, never()).deleteOwnedToken(anyLong(), anyString());
         assertThat(notice.getStatus()).isEqualTo("PENDING");
@@ -110,7 +110,7 @@ class PaymentNotificationRegressionTest {
         var passenger = new com.premier.model.Passenger(); passenger.setId(2L); passenger.setFcmToken("synthetic-token");
         when(passengers.findById(2L)).thenReturn(Optional.of(passenger));
         service.deliverPending();
-        verify(push, times(1)).send(eq("synthetic-token"), anyString(), anyString(), anyLong());
+        verify(push, times(1)).sendPayment(eq(2L), eq("synthetic-token"), anyString(), anyString(), anyLong());
         assertThat(notice.getStatus()).isEqualTo("DELIVERED");
     }
     @Test void legacyTokenReassignedToAnotherPassengerMustNotReceivePayment() throws Exception {
@@ -120,11 +120,11 @@ class PaymentNotificationRegressionTest {
         when(passengers.findById(2L)).thenReturn(Optional.of(original));
         when(tokens.findByFcmToken("synthetic-shared")).thenReturn(Optional.of(reassigned));
         service.deliverPending();
-        verify(push, never()).send(eq("synthetic-shared"), anyString(), anyString(), anyLong());
-        verify(push).send(eq("synthetic-token"), anyString(), anyString(), anyLong());
+        verify(push, never()).sendPayment(eq(2L), eq("synthetic-shared"), anyString(), anyString(), anyLong());
+        verify(push).sendPayment(eq(2L), eq("synthetic-token"), anyString(), anyString(), anyLong());
     }
     @Test void interruptionPreservesLeaseAndInterruptFlag() throws Exception {
-        doThrow(new InterruptedException()).when(push).send(anyString(), anyString(), anyString(), anyLong());
+        doThrow(new InterruptedException()).when(push).sendPayment(eq(2L), anyString(), anyString(), anyString(), anyLong());
         try {
             service.deliverPending();
             assertThat(Thread.currentThread().isInterrupted()).isTrue();

@@ -70,7 +70,7 @@ public class PaymentNotificationService {
                     log.debug("[FCM] stage=SEND notification={} passenger={} reference={} kind={} attempt={}",
                             claimed.getId(), claimed.getPassengerId(), claimed.getReference(), claimed.getKind(), claimed.getAttempts());
                     try {
-                        push.send(destination, claimed.getKind(), claimed.getReference(), Math.min(10000, remaining));
+                        push.sendPayment(claimed.getPassengerId(), destination, claimed.getKind(), claimed.getReference(), Math.min(10000, remaining));
                         sent = true;
                     } catch (InterruptedException interrupted) {
                         throw interrupted;

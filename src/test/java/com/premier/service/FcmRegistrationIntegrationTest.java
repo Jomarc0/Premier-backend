@@ -73,7 +73,7 @@ class FcmRegistrationIntegrationTest {
         var intent = notices.findAll().stream().filter(n -> n.getReference().equals(payment.getReferenceNumber())).findFirst().orElseThrow();
         intent.setDueAt(java.time.Instant.now().minusSeconds(3600)); notices.saveAndFlush(intent);
         var sender = org.mockito.Mockito.mock(com.premier.payment.service.PaymentPushSender.class);
-        org.mockito.Mockito.when(sender.send(org.mockito.ArgumentMatchers.eq(destination), org.mockito.ArgumentMatchers.eq("FARE"),
+        org.mockito.Mockito.when(sender.sendPayment(org.mockito.ArgumentMatchers.eq(owner.getId()), org.mockito.ArgumentMatchers.eq(destination), org.mockito.ArgumentMatchers.eq("FARE"),
                 org.mockito.ArgumentMatchers.eq(payment.getReferenceNumber()), org.mockito.ArgumentMatchers.anyLong()))
                 .thenAnswer(invocation -> {
                     assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
@@ -84,7 +84,7 @@ class FcmRegistrationIntegrationTest {
         var worker = new com.premier.payment.service.PaymentNotificationService(notices, passengers, tokens, transactions, sender);
         org.springframework.test.util.ReflectionTestUtils.setField(worker, "enabled", true);
         worker.deliverPending();
-        org.mockito.Mockito.verify(sender).send(org.mockito.ArgumentMatchers.eq(destination), org.mockito.ArgumentMatchers.eq("FARE"),
+        org.mockito.Mockito.verify(sender).sendPayment(org.mockito.ArgumentMatchers.eq(owner.getId()), org.mockito.ArgumentMatchers.eq(destination), org.mockito.ArgumentMatchers.eq("FARE"),
                 org.mockito.ArgumentMatchers.eq(payment.getReferenceNumber()), org.mockito.ArgumentMatchers.anyLong());
         var stored = notices.findById(intent.getId()).orElseThrow();
         assertThat(stored.getStatus()).isEqualTo(providerFails ? "PENDING" : "DELIVERED");
