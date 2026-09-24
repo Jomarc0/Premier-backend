@@ -68,10 +68,16 @@ public class VehicleTripService {
     }
 
     @Transactional(readOnly = true)
+    public Optional<VehicleTrip> findForFare(Long vehicleId, LocalDateTime capturedAt) {
+        if (vehicleId == null) return Optional.empty();
+        LocalDateTime moment = capturedAt == null ? LocalDateTime.now() : capturedAt;
+        return trips.findCovering(vehicleId, moment, PageRequest.of(0, 1)).stream().findFirst();
+    }
+
+    @Transactional(readOnly = true)
     public VehicleTrip requireForFare(Long vehicleId, LocalDateTime capturedAt) {
         if (vehicleId == null) throw reconciliation("Fare has no authenticated vehicle association.");
-        LocalDateTime moment = capturedAt == null ? LocalDateTime.now() : capturedAt;
-        return trips.findCovering(vehicleId, moment, PageRequest.of(0, 1)).stream().findFirst()
+        return findForFare(vehicleId, capturedAt)
                 .orElseThrow(() -> reconciliation("Vehicle has no trip covering this fare's capture time."));
     }
 

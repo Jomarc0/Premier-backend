@@ -471,8 +471,11 @@ public class FarePaymentService {
                 : driverShiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(normalizedPlate, capturedAt)
                     .filter(shift -> shift.getShiftEnd() == null || !capturedAt.isAfter(shift.getShiftEnd())).orElse(null);
         com.premier.driver.model.Vehicle vehicle = resolveVehicle(device, normalizedPlate, activeShift);
+        // A driver app is optional for terminal payments. Attach the trip when
+        // one covers the capture time, while retaining the authenticated
+        // device and vehicle association when no trip has been started.
         com.premier.trip.model.VehicleTrip trip = device == null ? null
-                : tripService.requireForFare(vehicle == null ? null : vehicle.getId(), capturedAt);
+                : tripService.findForFare(vehicle == null ? null : vehicle.getId(), capturedAt).orElse(null);
         if (trip != null) {
             vehicle = trip.getVehicle();
             activeShift = trip.getDriverShift();
