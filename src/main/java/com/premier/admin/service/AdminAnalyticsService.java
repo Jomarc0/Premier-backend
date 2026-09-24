@@ -22,6 +22,8 @@ import com.premier.staffqueue.response.BusQueueItemResponse;
 import com.premier.staffqueue.service.BusQueueService;
 import com.premier.support.model.SupportTicket;
 import com.premier.support.repository.SupportTicketRepository;
+import com.premier.trip.model.TripStatus;
+import com.premier.trip.repository.VehicleTripRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,6 +48,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /** Analytics for Premier's one fixed route and its two valid directions. */
@@ -72,6 +75,7 @@ public class AdminAnalyticsService {
     private final DeviceRepository deviceRepository;
     private final SupportTicketRepository supportTicketRepository;
     private final BusQueueService busQueueService;
+    private final VehicleTripRepository vehicleTripRepository;
 
     @Transactional(readOnly = true)
     public Map<String, Object> getAnalytics(String range, LocalDate from, LocalDate to, String direction, String bus) {
@@ -92,6 +96,8 @@ public class AdminAnalyticsService {
         DateWindow previousWindow = previousWindow(window);
         List<FareRecord> previous = loadFareRecords(previousWindow).stream().filter(filter::matches).toList();
         List<AttemptRecord> previousAttempts = loadAttempts(previousWindow).stream().filter(filter::matches).toList();
+        List<TripRecord> selectedTrips = loadTrips(window).stream().filter(filter::matches).toList();
+        List<TripRecord> previousTrips = loadTrips(previousWindow).stream().filter(filter::matches).toList();
         LocalDate today = LocalDate.now(zone);
         DateWindow todayWindow = dayWindow(today);
         List<FareRecord> todayRecords = sameWindow(window, todayWindow) ? selected
@@ -106,22 +112,22 @@ public class AdminAnalyticsService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("filters", filterMap(window, range, filter, zone));
         response.put("options", options(vehicles));
-        response.put("summary", summary(selected, attempts, todayRecords, vehicles, devices));
-        response.put("comparison", comparison(selected, attempts, previous, previousAttempts, window));
+        response.put("summary", summary(selected, attempts, todayRecords, vehicles, devices, selectedTrips));
+        response.put("comparison", comparison(selected, attempts, previous, previousAttempts, selectedTrips, previousTrips, window));
         response.put("trends", trends(selected, window));
-        response.put("busPerformance", busPerformance(selected, attempts, vehicles));
-        response.put("dailyBusPerformance", dailyBusPerformance(selected));
+        response.put("busPerformance", busPerformance(selected, attempts, vehicles, selectedTrips));
+        response.put("dailyBusPerformance", dailyBusPerformance(selected, selectedTrips));
         response.put("directionAnalytics", directionAnalytics(selected));
-        response.put("tripPerformance", unavailableTripPerformance());
+        response.put("tripPerformance", tripPerformance(selected, selectedTrips));
         response.put("passengerAnalytics", passengerAnalytics(selected));
         response.put("paymentAnalytics", paymentAnalytics(selected, window));
         response.put("transactionAnalytics", transactionAnalytics(selected, attempts));
-        response.put("fleetAnalytics", fleetAnalytics(selected, attempts, vehicles, devices, locations));
+        response.put("fleetAnalytics", fleetAnalytics(selected, attempts, vehicles, devices, locations, selectedTrips));
         response.put("terminalAnalytics", terminalAnalytics(selected, attempts, devices, locations, filter));
         response.put("recent", recent(selected, attempts, devices, locations, zone));
         response.put("forecast", forecast());
         response.put("definitions", definitions());
-        response.put("dataQuality", dataQuality(selected));
+        response.put("dataQuality", dataQuality(selected, selectedTrips));
         response.put("generatedAt", OffsetDateTime.now(zone).toString());
         response.put("charts", legacyCharts(response, shifts));
         return response;
@@ -141,8 +147,15 @@ public class AdminAnalyticsService {
                 .map(this::attemptRecord).toList();
     }
 
+    private List<TripRecord> loadTrips(DateWindow window) {
+        return vehicleTripRepository.findByStartedAtBetween(window.start(), window.end()).stream()
+                .map(trip -> new TripRecord(trip.getId(), trip.getStartedAt(), trip.getVehiclePlateNumber(),
+                        trip.getDirection().name(), trip.getStatus().name())).toList();
+    }
+
     private Map<String, Object> summary(List<FareRecord> records, List<AttemptRecord> attempts,
-                                        List<FareRecord> todayRecords, List<Vehicle> vehicles, List<Device> devices) {
+                                        List<FareRecord> todayRecords, List<Vehicle> vehicles, List<Device> devices,
+                                        List<TripRecord> trips) {
         List<FareRecord> successful = successful(records);
         BigDecimal revenue = sum(successful);
         Map<String, BusAggregate> buses = aggregateBuses(successful);
@@ -153,7 +166,7 @@ public class AdminAnalyticsService {
         return mapOf("fareRevenue", revenue, "totalRevenue", revenue,
                 "successfulTransactions", successful.size(), "totalPassengers", successful.size(),
                 "passengerMetric", "SUCCESSFUL_FARE_TRANSACTIONS", "uniquePassengers", uniquePassengers(successful),
-                "totalTrips", null, "tripDataAvailable", false,
+                "totalTrips", completedTrips(trips).size(), "tripDataAvailable", true,
                 "averageFarePerPassenger", divide(revenue, successful.size()),
                 "revenueToday", sum(todaySuccess), "passengersToday", todaySuccess.size(),
                 "bestPerformingBus", best == null ? null : busSummary(best),
@@ -164,13 +177,14 @@ public class AdminAnalyticsService {
 
     private Map<String, Object> comparison(List<FareRecord> records, List<AttemptRecord> attempts,
                                            List<FareRecord> previous, List<AttemptRecord> previousAttempts,
-                                           DateWindow window) {
+                                           List<TripRecord> trips, List<TripRecord> previousTrips, DateWindow window) {
         List<FareRecord> currentSuccess = successful(records);
         List<FareRecord> previousSuccess = successful(previous);
         return mapOf("label", previousLabel(window),
                 "revenue", comparisonMetric(sum(currentSuccess), sum(previousSuccess)),
                 "passengers", comparisonMetric(BigDecimal.valueOf(currentSuccess.size()), BigDecimal.valueOf(previousSuccess.size())),
-                "trips", mapOf("available", false, "percentage", null),
+                "trips", comparisonMetric(BigDecimal.valueOf(completedTrips(trips).size()),
+                        BigDecimal.valueOf(completedTrips(previousTrips).size())),
                 "paymentSuccessRate", comparisonMetric(paymentSuccessRate(attempts, records), paymentSuccessRate(previousAttempts, previous)));
     }
 
@@ -187,17 +201,20 @@ public class AdminAnalyticsService {
         return mapOf("revenue", revenue, "passengers", passengers, "passengerSummary", trendSummary(passengers));
     }
 
-    private Map<String, Object> busPerformance(List<FareRecord> records, List<AttemptRecord> attempts, List<Vehicle> vehicles) {
+    private Map<String, Object> busPerformance(List<FareRecord> records, List<AttemptRecord> attempts,
+                                                List<Vehicle> vehicles, List<TripRecord> trips) {
         Map<String, long[]> attemptCounts = attempts.stream().filter(a -> a.bus() != null).collect(Collectors.toMap(
                 AttemptRecord::bus, a -> new long[]{1, a.successful() ? 1 : 0},
                 (a, b) -> new long[]{a[0] + b[0], a[1] + b[1]}, LinkedHashMap::new));
         List<Map<String, Object>> rows = aggregateBuses(successful(records)).values().stream()
                 .sorted(Comparator.comparing(BusAggregate::revenue).reversed()).map(bus -> {
                     long[] counts = attemptCounts.getOrDefault(bus.bus(), new long[]{0, 0});
+                    long tripCount = completedTrips(trips).stream().filter(trip -> bus.bus().equalsIgnoreCase(trip.bus())).count();
                     return mapOf("bus", bus.bus(), "name", bus.bus(), "passengers", bus.passengers(),
                             "revenue", bus.revenue(), "uniquePassengers", bus.uniquePassengers(),
                             "paymentSuccessRate", counts[0] == 0 ? null : percent(counts[1], counts[0]),
-                            "trips", null, "tripDataAvailable", false);
+                            "trips", tripCount, "passengersPerTrip", tripCount == 0 ? null : divide(BigDecimal.valueOf(bus.passengers()), tripCount),
+                            "revenuePerTrip", tripCount == 0 ? null : divide(bus.revenue(), tripCount), "tripDataAvailable", true);
                 }).toList();
         return mapOf("buses", rows,
                 "passengersByBus", rows.stream().map(r -> mapOf("name", r.get("bus"), "passengers", r.get("passengers"))).toList(),
@@ -205,7 +222,7 @@ public class AdminAnalyticsService {
                 "availableBuses", vehicles.stream().map(Vehicle::getPlateNumber).filter(Objects::nonNull).sorted().toList());
     }
 
-    private List<Map<String, Object>> dailyBusPerformance(List<FareRecord> records) {
+    private List<Map<String, Object>> dailyBusPerformance(List<FareRecord> records, List<TripRecord> trips) {
         record Key(LocalDate day, String bus) {}
         Map<Key, List<FareRecord>> grouped = successful(records).stream().filter(r -> r.bus() != null)
                 .collect(Collectors.groupingBy(r -> new Key(r.createdAt().toLocalDate(), r.bus()), LinkedHashMap::new, Collectors.toList()));
@@ -214,11 +231,14 @@ public class AdminAnalyticsService {
                     List<FareRecord> rows = entry.getValue();
                     long sm = rows.stream().filter(r -> SM_TO_GRAND.equals(r.direction())).count();
                     long grand = rows.stream().filter(r -> GRAND_TO_SM.equals(r.direction())).count();
+                    long tripCount = completedTrips(trips).stream().filter(trip -> trip.startedAt().toLocalDate().equals(entry.getKey().day())
+                            && entry.getKey().bus().equalsIgnoreCase(trip.bus())).count();
                     return mapOf("date", entry.getKey().day(), "bus", entry.getKey().bus(),
                             "smToGrandPassengers", sm, "grandToSmPassengers", grand,
                             "unassignedDirectionPassengers", rows.size() - sm - grand, "totalPassengers", rows.size(),
-                            "uniquePassengers", uniquePassengers(rows), "trips", null, "revenue", sum(rows),
-                            "passengersPerTrip", null, "revenuePerTrip", null, "tripDataAvailable", false);
+                            "uniquePassengers", uniquePassengers(rows), "trips", tripCount, "revenue", sum(rows),
+                            "passengersPerTrip", tripCount == 0 ? null : divide(BigDecimal.valueOf(rows.size()), tripCount),
+                            "revenuePerTrip", tripCount == 0 ? null : divide(sum(rows), tripCount), "tripDataAvailable", true);
                 }).toList();
     }
 
@@ -237,11 +257,23 @@ public class AdminAnalyticsService {
         return mapOf("directions", rows, "unknownDirectionTransactions", successful(records).stream().filter(r -> r.direction() == null).count());
     }
 
-    private Map<String, Object> unavailableTripPerformance() {
-        return mapOf("available", false,
-                "message", "Trip analytics are unavailable because the database does not store individual terminal-to-terminal trips or link fares to a trip. Driver shifts are not counted as trips.",
-                "totalTrips", null, "completedTrips", null, "cancelledTrips", null,
-                "averagePassengersPerTrip", null, "averageRevenuePerTrip", null, "byBus", List.of());
+    private Map<String, Object> tripPerformance(List<FareRecord> records, List<TripRecord> trips) {
+        List<TripRecord> completed = completedTrips(trips);
+        Set<Long> completedIds = completed.stream().map(TripRecord::id).collect(Collectors.toSet());
+        List<FareRecord> linked = successful(records).stream()
+                .filter(fare -> fare.tripId() != null && completedIds.contains(fare.tripId())).toList();
+        Map<String, List<TripRecord>> byBus = completed.stream().collect(Collectors.groupingBy(TripRecord::bus, LinkedHashMap::new, Collectors.toList()));
+        List<Map<String, Object>> buses = byBus.entrySet().stream().map(entry -> {
+            var ids = entry.getValue().stream().map(TripRecord::id).collect(Collectors.toSet());
+            var fares = linked.stream().filter(fare -> ids.contains(fare.tripId())).toList();
+            return mapOf("bus", entry.getKey(), "trips", entry.getValue().size(), "passengers", fares.size(),
+                    "revenue", sum(fares), "passengersPerTrip", divide(BigDecimal.valueOf(fares.size()), entry.getValue().size()),
+                    "revenuePerTrip", divide(sum(fares), entry.getValue().size()));
+        }).toList();
+        return mapOf("available", true, "totalTrips", completed.size(), "completedTrips", completed.size(),
+                "cancelledTrips", trips.stream().filter(trip -> TripStatus.CANCELLED.name().equals(trip.status())).count(),
+                "averagePassengersPerTrip", divide(BigDecimal.valueOf(linked.size()), completed.size()),
+                "averageRevenuePerTrip", divide(sum(linked), completed.size()), "byBus", buses);
     }
 
     private Map<String, Object> passengerAnalytics(List<FareRecord> records) {
@@ -309,19 +341,34 @@ public class AdminAnalyticsService {
     }
 
     private Map<String, Object> fleetAnalytics(List<FareRecord> records, List<AttemptRecord> attempts, List<Vehicle> vehicles,
-                                                List<Device> devices, List<DriverLocation> locations) {
+                                                List<Device> devices, List<DriverLocation> locations, List<TripRecord> trips) {
         List<Map<String, Object>> rankings = aggregateBuses(successful(records)).values().stream()
                 .sorted(Comparator.comparing(BusAggregate::revenue).reversed())
-                .map(b -> mapOf("bus", b.bus(), "revenue", b.revenue(), "passengers", b.passengers(),
-                        "uniquePassengers", b.uniquePassengers(), "trips", null, "passengersPerTrip", null, "revenuePerTrip", null)).toList();
-        List<Map<String, Object>> utilization = vehicles.stream().map(v -> mapOf("bus", v.getPlateNumber(),
-                "capacity", v.getTotalCapacity() > 0 ? v.getTotalCapacity() : null, "averagePassengers", null,
-                "utilizationPercentage", null, "status", "Unavailable", "available", false,
-                "reason", "Average passenger load requires individual trip records.")).toList();
+                .map(b -> {
+                    long tripCount = completedTrips(trips).stream().filter(t -> b.bus().equalsIgnoreCase(t.bus())).count();
+                    return mapOf("bus", b.bus(), "revenue", b.revenue(), "passengers", b.passengers(),
+                            "uniquePassengers", b.uniquePassengers(), "trips", tripCount,
+                            "passengersPerTrip", tripCount == 0 ? null : divide(BigDecimal.valueOf(b.passengers()), tripCount),
+                            "revenuePerTrip", tripCount == 0 ? null : divide(b.revenue(), tripCount));
+                }).toList();
+        List<TripRecord> completed = completedTrips(trips);
+        List<FareRecord> successful = successful(records);
+        List<Map<String, Object>> utilization = vehicles.stream().map(v -> {
+            List<Long> tripIds = completed.stream().filter(t -> v.getPlateNumber().equalsIgnoreCase(t.bus()))
+                    .map(TripRecord::id).toList();
+            long passengerCount = successful.stream().filter(f -> f.tripId() != null && tripIds.contains(f.tripId())).count();
+            BigDecimal averagePassengers = tripIds.isEmpty() ? null : divide(BigDecimal.valueOf(passengerCount), tripIds.size());
+            BigDecimal utilizationPercentage = averagePassengers == null || v.getTotalCapacity() <= 0 ? null
+                    : percentage(averagePassengers, BigDecimal.valueOf(v.getTotalCapacity()));
+            return mapOf("bus", v.getPlateNumber(), "capacity", v.getTotalCapacity() > 0 ? v.getTotalCapacity() : null,
+                    "averagePassengers", averagePassengers, "utilizationPercentage", utilizationPercentage,
+                    "status", tripIds.isEmpty() ? "No completed trips" : "Available", "available", !tripIds.isEmpty(),
+                    "reason", tripIds.isEmpty() ? "No completed trips in the selected period." : "Based on completed terminal-to-terminal trips.");
+        }).toList();
         return mapOf("utilization", utilization, "topPerformingBuses", rankings,
                 "busesRequiringAttention", busesRequiringAttention(records, attempts, devices, locations),
-                "rankingMetricsAvailable", List.of("REVENUE", "PASSENGERS"),
-                "rankingMetricsUnavailable", List.of("TRIPS", "PASSENGERS_PER_TRIP", "REVENUE_PER_TRIP", "UTILIZATION"));
+                "rankingMetricsAvailable", List.of("REVENUE", "PASSENGERS", "TRIPS", "PASSENGERS_PER_TRIP", "REVENUE_PER_TRIP"),
+                "rankingMetricsUnavailable", List.of("UTILIZATION"));
     }
 
     private Map<String, Object> terminalAnalytics(List<FareRecord> records, List<AttemptRecord> attempts,
@@ -406,13 +453,16 @@ public class AdminAnalyticsService {
                 "reason", String.join(", ", e.getValue()))).toList();
     }
 
-    private Map<String, Object> dataQuality(List<FareRecord> records) {
-        return mapOf("tripDataAvailable", false,
+    private Map<String, Object> dataQuality(List<FareRecord> records, List<TripRecord> trips) {
+        return mapOf("tripDataAvailable", true,
+                "completedTrips", completedTrips(trips).size(),
+                "faresAssignedToTrips", records.stream().filter(r -> r.tripId() != null).count(),
+                "faresMissingTrip", records.stream().filter(r -> r.tripId() == null).count(),
                 "directionAssignedTransactions", records.stream().filter(r -> r.direction() != null).count(),
                 "directionMissingTransactions", records.stream().filter(r -> r.direction() == null).count(),
                 "busAssignedTransactions", records.stream().filter(r -> r.bus() != null).count(),
                 "busMissingTransactions", records.stream().filter(r -> r.bus() == null).count(),
-                "limitations", List.of("Individual trips are not stored; trip totals and utilization are unavailable.",
+                "limitations", List.of("Pre-migration fare history is left unassigned rather than inferred into trips.",
                         "Assisted cash is included in passenger transactions but excluded from unique account passengers.",
                         "Historical queue and processing-time snapshots are not stored."));
     }
@@ -421,8 +471,8 @@ public class AdminAnalyticsService {
         return mapOf("totalRevenue", "Sum of successful account fare deductions and assisted cash fares.",
                 "totalPassengers", "Successful fare transactions; this is a boarding/fare-event metric, not distinct people.",
                 "uniquePassengers", "Distinct passenger accounts among successful RFID, NFC, and QR fares; assisted cash is excluded.",
-                "totalTrips", "Unavailable until terminal-to-terminal trip records are stored.",
-                "direction", "Only SM_TO_GRAND and GRAND_TO_SM are recognized.",
+                "totalTrips", "Completed terminal-to-terminal trip records whose departure time is in the selected period.",
+                "direction", "The explicit trip direction selected by the driver and stored with each fare.",
                 "paymentSuccessRate", "Successful fare attempts divided by all recorded fare attempts.");
     }
 
@@ -439,14 +489,22 @@ public class AdminAnalyticsService {
     }
 
     private FareRecord fareRecord(Transaction tx) {
-        return new FareRecord(tx.getCreatedAt(), tx.getAmount(), transactionBus(tx), normalizeDirection(tx.getRouteSnapshot()),
+        LocalDateTime eventAt = tx.getOfflineCapturedAt() == null ? tx.getCreatedAt() : tx.getOfflineCapturedAt();
+        return new FareRecord(eventAt, tx.getAmount(), transactionBus(tx),
+                tx.getTripDirection() == null ? normalizeDirection(tx.getRouteSnapshot()) : tx.getTripDirection().name(),
                 transactionPaymentMethod(tx), normalizeTransactionStatus(tx.getStatus()),
-                tx.getPassenger() == null ? null : tx.getPassenger().getId(), tx.getReferenceNumber(), tx.getDeviceId());
+                tx.getPassenger() == null ? null : tx.getPassenger().getId(), tx.getReferenceNumber(), tx.getDeviceId(),
+                tx.getTrip() == null ? null : tx.getTrip().getId());
     }
 
     private FareRecord cashRecord(StaffCashTransaction tx) {
-        return new FareRecord(tx.getCreatedAt(), tx.getFinalFare(), tx.getVehicle() == null ? null : tx.getVehicle().getPlateNumber(),
-                normalizeDirection(tx.getRouteSnapshot()), "ASSISTED_CASH", "SUCCESSFUL", null, tx.getReferenceNumber(), tx.getDeviceId());
+        String bus = tx.getTrip() != null ? tx.getTrip().getVehiclePlateNumber()
+                : tx.getVehicle() == null ? null : tx.getVehicle().getPlateNumber();
+        LocalDateTime eventAt = tx.getOfflineCapturedAt() == null ? tx.getCreatedAt() : tx.getOfflineCapturedAt();
+        return new FareRecord(eventAt, tx.getFinalFare(), bus,
+                tx.getTripDirection() == null ? normalizeDirection(tx.getRouteSnapshot()) : tx.getTripDirection().name(),
+                "ASSISTED_CASH", "SUCCESSFUL", null, tx.getReferenceNumber(), tx.getDeviceId(),
+                tx.getTrip() == null ? null : tx.getTrip().getId());
     }
 
     private AttemptRecord attemptRecord(FarePaymentAttempt a) {
@@ -471,6 +529,8 @@ public class AdminAnalyticsService {
     }
 
     private String transactionBus(Transaction tx) {
+        if (clean(tx.getVehiclePlateNumber()) != null) return clean(tx.getVehiclePlateNumber());
+        if (tx.getTrip() != null && clean(tx.getTrip().getVehiclePlateNumber()) != null) return clean(tx.getTrip().getVehiclePlateNumber());
         if (tx.getVehicle() != null) return clean(tx.getVehicle().getPlateNumber());
         if (tx.getDriverShift() != null && tx.getDriverShift().getVehicle() != null) return clean(tx.getDriverShift().getVehicle().getPlateNumber());
         if (tx.getDescription() != null && tx.getDescription().contains("|")) {
@@ -486,6 +546,7 @@ public class AdminAnalyticsService {
     }
 
     private List<FareRecord> successful(List<FareRecord> records) { return records.stream().filter(r -> "SUCCESSFUL".equals(r.status())).toList(); }
+    private List<TripRecord> completedTrips(List<TripRecord> trips) { return trips.stream().filter(t -> TripStatus.COMPLETED.name().equals(t.status())).toList(); }
     private BigDecimal sum(List<FareRecord> records) { return records.stream().map(FareRecord::amount).filter(Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add); }
     private long uniquePassengers(List<FareRecord> records) { return records.stream().map(FareRecord::passengerId).filter(Objects::nonNull).distinct().count(); }
 
@@ -571,8 +632,10 @@ public class AdminAnalyticsService {
     private String normalizeDirection(String value) {
         String clean = blankToNull(value); if (clean == null) return null;
         String n = clean.toUpperCase(Locale.ROOT).replace("\u2192", "_TO_").replace("->", "_TO_").replaceAll("[^A-Z]+", "_").replaceAll("_+", "_").replaceAll("^_|_$", "");
-        if (n.equals(SM_TO_GRAND) || n.equals("SM_TERMINAL_TO_GRAND_TERMINAL")) return SM_TO_GRAND;
-        if (n.equals(GRAND_TO_SM) || n.equals("GRAND_TERMINAL_TO_SM_TERMINAL")) return GRAND_TO_SM;
+        if (n.equals(SM_TO_GRAND) || n.equals("SM_TERMINAL_TO_GRAND_TERMINAL")
+                || n.equals("SM_LIPA_TO_GRAND_TERMINAL")) return SM_TO_GRAND;
+        if (n.equals(GRAND_TO_SM) || n.equals("GRAND_TERMINAL_TO_SM_TERMINAL")
+                || n.equals("GRAND_TERMINAL_TO_SM_LIPA")) return GRAND_TO_SM;
         return null;
     }
 
@@ -602,12 +665,14 @@ public class AdminAnalyticsService {
     private Map<String, Object> mapOf(Object... values) { Map<String, Object> map = new LinkedHashMap<>(); for (int i = 0; i < values.length; i += 2) map.put(String.valueOf(values[i]), values[i + 1]); return map; }
 
     private record DateWindow(LocalDateTime start, LocalDateTime end) {}
-    private record FareRecord(LocalDateTime createdAt, BigDecimal amount, String bus, String direction, String paymentMethod, String status, Long passengerId, String reference, String deviceId) {}
+    private record FareRecord(LocalDateTime createdAt, BigDecimal amount, String bus, String direction, String paymentMethod, String status, Long passengerId, String reference, String deviceId, Long tripId) {}
     private record AttemptRecord(LocalDateTime createdAt, String bus, String direction, String paymentMethod, boolean successful, String failureReason, String failureMessage, String deviceId, String transactionId) {}
+    private record TripRecord(Long id, LocalDateTime startedAt, String bus, String direction, String status) {}
     private record BusAggregate(String bus, long passengers, long uniquePassengers, BigDecimal revenue) {}
     private record DirectionAggregate(String code, String label, long passengers, BigDecimal revenue) {}
     private record AnalyticsFilter(String busId, String direction, String paymentMethod, String status) {
         boolean matches(FareRecord r) { return (busId == null || r.bus() != null && busId.equalsIgnoreCase(r.bus())) && (direction == null || direction.equals(r.direction())) && (paymentMethod == null || paymentMethod.equals(r.paymentMethod())) && (status == null || status.equals(r.status())); }
         boolean matches(AttemptRecord r) { String s = r.successful() ? "SUCCESSFUL" : "FAILED"; return (busId == null || r.bus() != null && busId.equalsIgnoreCase(r.bus())) && (direction == null || direction.equals(r.direction())) && (paymentMethod == null || paymentMethod.equals(r.paymentMethod())) && (status == null || status.equals(s)); }
+        boolean matches(TripRecord r) { return (busId == null || r.bus() != null && busId.equalsIgnoreCase(r.bus())) && (direction == null || direction.equals(r.direction())); }
     }
 }

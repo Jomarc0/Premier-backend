@@ -131,8 +131,13 @@ public class BusQueueService {
     }
 
     private String routeForVehicle(Vehicle vehicle, Optional<DriverLocation> latestLocation) {
+        String storedRoute = normalizedRouteOrDefault(vehicle.getRoute());
+        if (storedRoute != null) {
+            return storedRoute;
+        }
+
         if (latestLocation.isEmpty()) {
-            return normalizedRouteOrDefault(vehicle.getRoute());
+            return null;
         }
         DriverLocation location = latestLocation.get();
 
@@ -150,15 +155,10 @@ public class BusQueueService {
         );
 
         if (distanceToSm <= TERMINAL_GEOFENCE_KM && distanceToSm <= distanceToGrand) {
-            return GRAND_TO_SM;
-        }
-        if (distanceToGrand <= TERMINAL_GEOFENCE_KM) {
             return SM_TO_GRAND;
         }
-
-        String storedRoute = normalizedRouteOrDefault(vehicle.getRoute());
-        if (storedRoute != null) {
-            return storedRoute;
+        if (distanceToGrand <= TERMINAL_GEOFENCE_KM) {
+            return GRAND_TO_SM;
         }
 
         return distanceToSm <= distanceToGrand ? GRAND_TO_SM : SM_TO_GRAND;
@@ -203,7 +203,9 @@ public class BusQueueService {
                 .replace("\u2192", "to")
                 .replace("->", "to")
                 .replace("-", " ")
+                .replace("_", " ")
                 .replaceAll("\\s+", " ")
+                .replace("sm lipa", "sm terminal")
                 .trim();
     }
 

@@ -20,6 +20,10 @@ import com.premier.staffcash.repository.StaffCashTransactionRepository;
 import com.premier.staffqueue.response.BusQueueDashboardResponse;
 import com.premier.staffqueue.service.BusQueueService;
 import com.premier.support.repository.SupportTicketRepository;
+import com.premier.trip.model.TripDirection;
+import com.premier.trip.model.TripStatus;
+import com.premier.trip.model.VehicleTrip;
+import com.premier.trip.repository.VehicleTripRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -31,6 +35,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -50,13 +55,15 @@ class AdminAnalyticsServiceTest {
     @Mock DeviceRepository deviceRepository;
     @Mock SupportTicketRepository ticketRepository;
     @Mock BusQueueService queueService;
+    @Mock VehicleTripRepository tripRepository;
 
     private AdminAnalyticsService service;
 
     @BeforeEach
     void setUp() {
         service = new AdminAnalyticsService(transactionRepository, attemptRepository, cashRepository,
-                vehicleRepository, shiftRepository, locationRepository, deviceRepository, ticketRepository, queueService);
+                vehicleRepository, shiftRepository, locationRepository, deviceRepository, ticketRepository, queueService,
+                tripRepository);
     }
 
     private void stubEmptyDashboardDependencies() {
@@ -70,6 +77,7 @@ class AdminAnalyticsServiceTest {
         when(ticketRepository.findTop10ByOrderByCreatedAtDesc()).thenReturn(List.of());
         when(transactionRepository.countDistinctFareOperatingDays()).thenReturn(0L);
         when(queueService.getDashboard()).thenReturn(new BusQueueDashboardResponse(LocalDateTime.now(), List.of(), List.of()));
+        when(tripRepository.findByStartedAtBetween(any(), any())).thenReturn(List.of());
     }
 
     @Test
@@ -85,8 +93,8 @@ class AdminAnalyticsServiceTest {
 
         assertThat(summary.get("totalRevenue")).isEqualTo(BigDecimal.ZERO);
         assertThat(summary.get("totalPassengers")).isEqualTo(0);
-        assertThat(summary.get("totalTrips")).isNull();
-        assertThat(tripPerformance.get("available")).isEqualTo(false);
+        assertThat(summary.get("totalTrips")).isEqualTo(0);
+        assertThat(tripPerformance.get("available")).isEqualTo(true);
         assertThat((List<?>) options.get("directions")).hasSize(2);
         assertThat(options).doesNotContainKey("routes");
         verify(ticketRepository).findTop10ByOrderByCreatedAtDesc();
@@ -136,5 +144,54 @@ class AdminAnalyticsServiceTest {
                 null, null, null, null, "Asia/Manila"))
                 .isInstanceOf(ClientException.class)
                 .satisfies(error -> assertThat(((ClientException) error).getCode()).isEqualTo("ANALYTICS_RANGE_INVALID"));
+    }
+
+    @Test
+    void tenPassengersAcrossTwoCompletedTripsProduceSixAndFourDirectionalCounts() {
+        stubEmptyDashboardDependencies();
+        Vehicle bus = Vehicle.builder().id(7L).plateNumber("DAR-5315").totalCapacity(50).build();
+        LocalDateTime now = LocalDateTime.now();
+        VehicleTrip outbound = VehicleTrip.builder().id(101L).vehicle(bus).vehiclePlateNumber("DAR-5315")
+                .direction(TripDirection.SM_TO_GRAND).originTerminal("SM Terminal").destinationTerminal("Grand Terminal")
+                .startedAt(now.minusHours(2)).endedAt(now.minusHours(1)).status(TripStatus.COMPLETED).build();
+        VehicleTrip inbound = VehicleTrip.builder().id(102L).vehicle(bus).vehiclePlateNumber("DAR-5315")
+                .direction(TripDirection.GRAND_TO_SM).originTerminal("Grand Terminal").destinationTerminal("SM Terminal")
+                .startedAt(now.minusMinutes(50)).endedAt(now.minusMinutes(5)).status(TripStatus.COMPLETED).build();
+        List<Transaction> fares = IntStream.range(0, 10).mapToObj(index -> {
+            VehicleTrip trip = index < 6 ? outbound : inbound;
+            return Transaction.builder().id(200L + index).passenger(Passenger.builder().id(300L + index).build())
+                    .type(TransactionType.FARE_DEDUCTION).status(TransactionStatus.SUCCESS)
+                    .amount(new BigDecimal("60.00")).paymentMethod(PaymentMethod.RFID).vehicle(bus)
+                    .vehiclePlateNumber("DAR-5315").trip(trip).tripDirection(trip.getDirection())
+                    .originTerminal(trip.getOriginTerminal()).destinationTerminal(trip.getDestinationTerminal())
+                    .referenceNumber("FARE-" + index).createdAt(now.minusMinutes(100L - index)).build();
+        }).toList();
+        when(transactionRepository.findByCreatedAtBetweenOrderByCreatedAtDesc(any(), any())).thenReturn(fares);
+        when(vehicleRepository.findAll()).thenReturn(List.of(bus));
+        when(tripRepository.findByStartedAtBetween(any(), any())).thenReturn(List.of(outbound, inbound));
+
+        Map<String, Object> dashboard = service.getDashboard("today", null, null,
+                null, null, null, null, "Asia/Manila");
+
+        Map<?, ?> summary = (Map<?, ?>) dashboard.get("summary");
+        Map<?, ?> directionAnalytics = (Map<?, ?>) dashboard.get("directionAnalytics");
+        List<?> directions = (List<?>) directionAnalytics.get("directions");
+        Map<?, ?> smToGrand = (Map<?, ?>) directions.get(0);
+        Map<?, ?> grandToSm = (Map<?, ?>) directions.get(1);
+        Map<?, ?> tripPerformance = (Map<?, ?>) dashboard.get("tripPerformance");
+        List<?> daily = (List<?>) dashboard.get("dailyBusPerformance");
+        Map<?, ?> dailyBus = (Map<?, ?>) daily.get(0);
+        assertThat(summary.get("totalPassengers")).isEqualTo(10);
+        assertThat((BigDecimal) summary.get("totalRevenue")).isEqualByComparingTo("600.00");
+        assertThat(summary.get("totalTrips")).isEqualTo(2);
+        assertThat(smToGrand.get("passengers")).isEqualTo(6L);
+        assertThat(grandToSm.get("passengers")).isEqualTo(4L);
+        assertThat(((Map<?, ?>) summary.get("peakDirection")).get("direction")).isEqualTo(AdminAnalyticsService.SM_TO_GRAND);
+        assertThat(tripPerformance.get("averagePassengersPerTrip")).isEqualTo(new BigDecimal("5.00"));
+        assertThat(tripPerformance.get("averageRevenuePerTrip")).isEqualTo(new BigDecimal("300.00"));
+        assertThat(dailyBus.get("smToGrandPassengers")).isEqualTo(6L);
+        assertThat(dailyBus.get("grandToSmPassengers")).isEqualTo(4L);
+        assertThat(dailyBus.get("totalPassengers")).isEqualTo(10);
+        assertThat(dailyBus.get("trips")).isEqualTo(2L);
     }
 }

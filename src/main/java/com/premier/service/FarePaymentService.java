@@ -3,6 +3,7 @@ package com.premier.service;
 import com.premier.driver.model.DriverShift;
 import com.premier.driver.model.ShiftStatus;
 import com.premier.driver.repository.DriverShiftRepository;
+import com.premier.driver.repository.VehicleRepository;
 import com.premier.device.security.DevicePrincipal;
 import com.premier.device.service.DeviceService;
 import com.premier.model.*;
@@ -55,6 +56,7 @@ public class FarePaymentService {
     private final TransactionRepository transactionRepository;
     private final FareQrTokenRepository fareQrTokenRepository;
     private final DriverShiftRepository driverShiftRepository;
+    private final VehicleRepository vehicleRepository;
     private final FirebaseService firebaseService;
     private final DeviceService deviceService;
     private final FarePaymentAttemptService farePaymentAttemptService;
@@ -63,6 +65,7 @@ public class FarePaymentService {
     private final com.premier.payment.service.PaymentIdentity paymentIdentity;
     private final com.premier.payment.service.PaymentFailureRecorder paymentFailureRecorder;
     private final com.premier.payment.service.PaymentNotificationService paymentNotifications;
+    private final com.premier.trip.service.VehicleTripService tripService;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -460,6 +463,13 @@ public class FarePaymentService {
         DriverShift activeShift = capturedAt == null ? activeShiftForPlate(normalizedPlate)
                 : driverShiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(normalizedPlate, capturedAt)
                     .filter(shift -> shift.getShiftEnd() == null || !capturedAt.isAfter(shift.getShiftEnd())).orElse(null);
+        com.premier.driver.model.Vehicle vehicle = resolveVehicle(device, normalizedPlate, activeShift);
+        com.premier.trip.model.VehicleTrip trip = device == null ? null
+                : tripService.requireForFare(vehicle == null ? null : vehicle.getId(), capturedAt);
+        if (trip != null) {
+            vehicle = trip.getVehicle();
+            activeShift = trip.getDriverShift();
+        }
         String refNumber = source + "-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
@@ -477,11 +487,15 @@ public class FarePaymentService {
                 .offlineCapturedAt(capturedAt)
                 .deviceId(device != null ? device.deviceId() : null)
                 .paymentMethod(paymentMethod(source))
-                .vehicle(activeShift != null ? activeShift.getVehicle() : null)
+                .vehicle(vehicle)
+                .vehiclePlateNumber(normalizedPlate)
+                .trip(trip)
+                .tripDirection(trip == null ? null : trip.getDirection())
+                .originTerminal(trip == null ? null : trip.getOriginTerminal())
+                .destinationTerminal(trip == null ? null : trip.getDestinationTerminal())
                 .driverShift(activeShift)
-                .routeSnapshot(activeShift != null && activeShift.getVehicle() != null
-                        ? activeShift.getVehicle().getRoute()
-                        : null)
+                .routeSnapshot(trip != null ? trip.getDirection().routeLabel()
+                        : activeShift != null && activeShift.getVehicle() != null ? activeShift.getVehicle().getRoute() : null)
                 .requestNonce(request != null ? clean(request.getRequestNonce()) : null)
                 .requestTimestamp(request != null ? parseRequestTimestamp(request.getRequestTimestamp()) : null)
                 .description(source + " Fare Payment" + (normalizedPlate != null ? " | " + normalizedPlate : ""))
@@ -520,6 +534,20 @@ public class FarePaymentService {
         }
         return driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
                 .orElse(null);
+    }
+
+    private com.premier.driver.model.Vehicle resolveVehicle(DevicePrincipal device, String plateNumber,
+                                                              DriverShift activeShift) {
+        if (activeShift != null && activeShift.getVehicle() != null) {
+            return activeShift.getVehicle();
+        }
+        if (device != null && device.vehicleId() != null) {
+            return vehicleRepository.findById(device.vehicleId())
+                    .filter(vehicle -> plateNumber != null
+                            && plateNumber.equalsIgnoreCase(vehicle.getPlateNumber()))
+                    .orElse(null);
+        }
+        return plateNumber == null ? null : vehicleRepository.findByPlateNumber(plateNumber).orElse(null);
     }
 
     private PaymentMethod paymentMethod(String source) {

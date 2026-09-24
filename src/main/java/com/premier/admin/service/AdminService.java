@@ -259,14 +259,14 @@ public class AdminService {
     }
 
     //  TRANSACTIONS 
-    public ApiResponse<Page<Transaction>> getAllTransactions(
+    public ApiResponse<Page<com.premier.response.TransactionResponse>> getAllTransactions(
             int page, int size) {
         return ApiResponse.success(
             "Transactions fetched.",
-            transactionRepository.findAll(
+            transactionRepository.findAllForAdmin(
                 PageRequest.of(page, size,
                     Sort.by(Sort.Direction.DESC,
-                        "createdAt"))));
+                        "createdAt"))).map(com.premier.response.TransactionResponse::from));
     }
 
     @Transactional

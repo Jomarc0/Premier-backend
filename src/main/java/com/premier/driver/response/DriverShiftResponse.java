@@ -15,6 +15,7 @@ public record DriverShiftResponse(
         Integer availableSeats,
         Integer passengersServed,
         LocalDateTime shiftStart,
+        com.premier.trip.response.VehicleTripResponse activeTrip,
         List<OnboardPassenger> onboardPassengers) {
     public record OnboardPassenger(Long onboardId, String userId, String dropOff, java.math.BigDecimal fare, Integer passengerCount) {}
 }

@@ -37,6 +37,19 @@ public class DriverPortalController {
         return service.endShift(principal(authentication), plateNumber);
     }
 
+    @PostMapping("/trips/start")
+    public com.premier.response.ApiResponse<com.premier.trip.response.VehicleTripResponse> startTrip(
+            Authentication authentication,
+            @Valid @RequestBody com.premier.trip.request.StartTripRequest request) {
+        return service.startTrip(principal(authentication), request.direction());
+    }
+
+    @PostMapping("/trips/{tripId}/complete")
+    public com.premier.response.ApiResponse<com.premier.trip.response.VehicleTripResponse> completeTrip(
+            Authentication authentication, @PathVariable Long tripId) {
+        return service.completeTrip(principal(authentication), tripId);
+    }
+
     @PostMapping("/drop-off/{onboardId}")
     public com.premier.response.ApiResponse<String> dropOff(Authentication authentication, @PathVariable Long onboardId) {
         return service.dropOff(principal(authentication), onboardId);

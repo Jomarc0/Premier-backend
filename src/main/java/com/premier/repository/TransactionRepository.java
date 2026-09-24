@@ -26,11 +26,16 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long> 
     Optional<Transaction> findByOfflineTransactionId(String offlineTransactionId);
     Optional<Transaction> findByReferenceNumberAndPassengerId(String referenceNumber, Long passengerId);
 
-    @EntityGraph(attributePaths = {"passenger", "vehicle", "driverShift", "driverShift.vehicle"})
+    @EntityGraph(attributePaths = {"passenger", "vehicle", "driverShift", "trip"})
+    @Query("select t from Transaction t")
+    Page<Transaction> findAllForAdmin(Pageable pageable);
+
+    @EntityGraph(attributePaths = {"passenger", "vehicle", "driverShift", "driverShift.vehicle", "trip"})
+    @Query("select t from Transaction t where coalesce(t.offlineCapturedAt,t.createdAt) >= :start and coalesce(t.offlineCapturedAt,t.createdAt) <= :end order by coalesce(t.offlineCapturedAt,t.createdAt) desc")
     List<Transaction> findByCreatedAtBetweenOrderByCreatedAtDesc(LocalDateTime start, LocalDateTime end);
 
     @Query("""
-            select count(distinct function('date', t.createdAt))
+            select count(distinct function('date', coalesce(t.offlineCapturedAt, t.createdAt)))
             from Transaction t
             where t.type in (com.premier.model.TransactionType.FARE_DEDUCTION,
                              com.premier.model.TransactionType.RIDE_FARE)

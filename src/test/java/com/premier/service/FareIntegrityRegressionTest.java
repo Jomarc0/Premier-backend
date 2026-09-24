@@ -35,6 +35,15 @@ class FareIntegrityRegressionTest {
     @Autowired com.premier.admin.service.AdminService adminService;
     @Autowired com.premier.admin.repository.AdminRepository admins;
     @Autowired com.premier.payment.repository.PaymentNotificationRepository notifications;
+    @Autowired com.premier.driver.repository.VehicleRepository vehicles;
+    @Autowired com.premier.driver.repository.DriverRepository drivers;
+    @Autowired com.premier.driver.repository.DriverShiftRepository shifts;
+    @Autowired com.premier.trip.repository.VehicleTripRepository trips;
+
+    @BeforeEach
+    void ensureActiveTrip() {
+        TripTestFixture.activeTrip("TEST-01", vehicles, drivers, shifts, trips);
+    }
 
     Passenger passenger(String balance) {
         String id = UUID.randomUUID().toString();
@@ -42,9 +51,10 @@ class FareIntegrityRegressionTest {
                 .status(PassengerStatus.ACTIVE).is2FaEnabled(true).balance(new BigDecimal(balance)).build());
     }
     DevicePrincipal device() {
+        var vehicle = vehicles.findByPlateNumber("TEST-01").orElseThrow();
         return DevicePrincipal.from(devices.saveAndFlush(Device.builder().deviceId(UUID.randomUUID().toString())
                 .deviceName("isolated test terminal").deviceType(DeviceType.VEHICLE_TERMINAL)
-                .plateNumber("TEST-01").tokenHash("not-a-production-credential").build()));
+                .vehicleId(vehicle.getId()).plateNumber("TEST-01").tokenHash("not-a-production-credential").build()));
     }
     DeviceFareRequest request(String payload, String key) {
         var request = new DeviceFareRequest();

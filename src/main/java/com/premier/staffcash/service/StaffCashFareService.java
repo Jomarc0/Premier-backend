@@ -38,6 +38,7 @@ public class StaffCashFareService {
     private final DriverShiftRepository shiftRepository;
     private final DeviceService deviceService;
     private final com.premier.payment.service.PaymentIdentity paymentIdentity;
+    private final com.premier.trip.service.VehicleTripService tripService;
 
     @Value("${fare.fixed-amount:60.00}")
     private BigDecimal regularFare;
@@ -98,7 +99,9 @@ public class StaffCashFareService {
                 ? regularFare.multiply(discountRate)
                 : BigDecimal.ZERO;
         BigDecimal finalFare = regularFare.subtract(discount);
-        String route = shift.getVehicle().getRoute();
+        var trip = tripService.requireForFare(shift.getVehicle().getId(), offlineCapturedAt);
+        shift = trip.getDriverShift();
+        String route = trip.getDirection().routeLabel();
 
         StaffCashTransaction tx = StaffCashTransaction.builder()
                 .staff(card.getStaff())
@@ -116,7 +119,11 @@ public class StaffCashFareService {
                 .offlineTransactionId(clean(request.getOfflineTransactionId()))
                 .offlineCapturedAt(offlineCapturedAt)
                 .routeSnapshot(route)
-                .terminalSnapshot(originTerminal(route))
+                .terminalSnapshot(trip.getOriginTerminal())
+                .trip(trip)
+                .tripDirection(trip.getDirection())
+                .originTerminal(trip.getOriginTerminal())
+                .destinationTerminal(trip.getDestinationTerminal())
                 .requestTimestamp(parseTimestamp(request.getRequestTimestamp()))
                 .build();
         transactionRepository.save(tx);

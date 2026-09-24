@@ -41,6 +41,7 @@ public class DriverPortalService {
     private final DriverLocationRepository locations;
     private final AdminRepository admins;
     private final DriverJwtUtil jwt;
+    private final com.premier.trip.service.VehicleTripService tripService;
 
     @Transactional
     public ApiResponse<DriverShiftCodeResponse> issueCode(Admin principal, IssueDriverShiftCodeRequest request) {
@@ -119,6 +120,7 @@ public class DriverPortalService {
     public ApiResponse<String> endShift(DriverPrincipal principal, String plateNumber) {
         requirePrincipalPlate(principal, plateNumber);
         DriverShift shift = activePrincipalShift(principal);
+        tripService.cancelActiveForShift(shift);
         shift.setStatus(ShiftStatus.COMPLETED);
         shift.setShiftEnd(LocalDateTime.now());
         shifts.save(shift);
@@ -130,11 +132,23 @@ public class DriverPortalService {
         throw new ClientException(HttpStatus.NOT_IMPLEMENTED, "ONBOARD_MANIFEST_UNAVAILABLE", "Drop-off confirmation requires an onboard passenger manifest table before it can be safely enabled.");
     }
 
+    public ApiResponse<com.premier.trip.response.VehicleTripResponse> startTrip(
+            DriverPrincipal principal, com.premier.trip.model.TripDirection direction) {
+        return tripService.start(principal, direction);
+    }
+
+    public ApiResponse<com.premier.trip.response.VehicleTripResponse> completeTrip(
+            DriverPrincipal principal, Long tripId) {
+        return tripService.complete(principal, tripId);
+    }
+
     private DriverShiftResponse response(DriverShift shift) {
         int total = shift.getVehicle().getTotalCapacity();
+        var activeTrip = tripService.activeForVehicle(shift.getVehicle().getId())
+                .map(com.premier.trip.response.VehicleTripResponse::from).orElse(null);
         return new DriverShiftResponse(shift.getId(), shift.getDriver().getId(), shift.getDriver().getFullName(),
                 shift.getVehicle().getId(), shift.getVehicle().getPlateNumber(), shift.getVehicle().getRoute(), total,
-                0, total, shift.getPassengersServed(), shift.getShiftStart(), List.of());
+                0, total, shift.getPassengersServed(), shift.getShiftStart(), activeTrip, List.of());
     }
 
     private DriverShift activePrincipalShift(DriverPrincipal principal) {

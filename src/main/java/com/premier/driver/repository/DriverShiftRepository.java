@@ -10,6 +10,10 @@ import java.time.LocalDateTime;
 public interface DriverShiftRepository
         extends JpaRepository<DriverShift, Long> {
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select shift from DriverShift shift where shift.id = :id")
+    Optional<DriverShift> findLockedById(@org.springframework.data.repository.query.Param("id") Long id);
+
     Optional<DriverShift> findByDriverIdAndStatus(
             Long driverId, ShiftStatus status);
 
