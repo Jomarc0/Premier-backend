@@ -510,7 +510,10 @@ public class AdminAnalyticsService {
     private AttemptRecord attemptRecord(FarePaymentAttempt a) {
         Vehicle vehicle = a.getVehicle();
         if (vehicle == null && a.getDriverShift() != null) vehicle = a.getDriverShift().getVehicle();
-        return new AttemptRecord(a.getCreatedAt(), vehicle == null ? null : vehicle.getPlateNumber(), normalizeDirection(a.getRouteSnapshot()),
+        String bus = clean(a.getVehiclePlateNumber());
+        if (bus == null && vehicle != null) bus = clean(vehicle.getPlateNumber());
+        LocalDateTime eventAt = a.getOfflineCapturedAt() == null ? a.getCreatedAt() : a.getOfflineCapturedAt();
+        return new AttemptRecord(eventAt, bus, a.getTripDirection() == null ? null : a.getTripDirection().name(),
                 a.getPaymentMethod() == null ? "UNKNOWN" : a.getPaymentMethod().name(), a.getStatus() == FarePaymentAttemptStatus.SUCCESS,
                 a.getFailureReason() == null ? "UNKNOWN" : a.getFailureReason().name(), a.getFailureMessage(), a.getDeviceId(),
                 a.getTransaction() == null ? String.valueOf(a.getId()) : a.getTransaction().getReferenceNumber());

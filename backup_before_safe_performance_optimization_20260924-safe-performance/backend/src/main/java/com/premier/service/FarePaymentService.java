@@ -433,12 +433,8 @@ public class FarePaymentService {
             DevicePrincipal device,
             DeviceFareRequest request) {
 
-        long performanceStarted = System.nanoTime();
-        paymentPerf(source, "fare_pipeline_start", performanceStarted);
-
         Passenger passenger = passengerRepository.findLockedById(passengerId)
                 .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Passenger not found."));
-        paymentPerf(source, "wallet_lock_lookup_complete", performanceStarted);
 
         if (passenger.getStatus() != PassengerStatus.ACTIVE) {
             throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "Account is inactive.");
@@ -449,11 +445,9 @@ public class FarePaymentService {
             throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT,
                     "CONFLICT", "Payment already processed recently. Please wait a moment.");
         }
-        paymentPerf(source, "duplicate_check_complete", performanceStarted);
 
         BigDecimal fare = fareFor(passenger);
         String discountType = discountTypeFor(passenger);
-        paymentPerf(source, "fare_calculation_complete", performanceStarted);
 
         if (passenger.getBalance().compareTo(fare) < 0) {
             throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE", "Insufficient balance. Please top up.");
@@ -463,7 +457,6 @@ public class FarePaymentService {
         BigDecimal balanceAfter = balanceBefore.subtract(fare);
         passenger.setBalance(balanceAfter);
         passengerRepository.save(passenger);
-        paymentPerf(source, "balance_update_queued", performanceStarted);
 
         String normalizedPlate = normalizePlate(plateNumber);
         LocalDateTime capturedAt = request == null ? null : com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
@@ -477,7 +470,6 @@ public class FarePaymentService {
             vehicle = trip.getVehicle();
             activeShift = trip.getDriverShift();
         }
-        paymentPerf(source, "vehicle_context_complete", performanceStarted);
         String refNumber = source + "-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
@@ -509,14 +501,10 @@ public class FarePaymentService {
                 .description(source + " Fare Payment" + (normalizedPlate != null ? " | " + normalizedPlate : ""))
                 .build();
         transactionRepository.save(tx);
-        paymentPerf(source, "transaction_insert_complete", performanceStarted);
         realtimeEventPublisher.adminAndPassenger(passenger.getId(), "FARE_PAID", "TRANSACTION", tx.getId());
-        paymentPerf(source, "realtime_event_complete", performanceStarted);
         farePaymentAttemptService.recordSuccess(tx, paymentMethod(source), rfidUid, normalizedPlate, request);
-        paymentPerf(source, "attempt_record_complete", performanceStarted);
 
         paymentNotifications.enqueue(passenger.getId(), refNumber, "FARE");
-        paymentPerf(source, "notification_enqueue_complete", performanceStarted);
 
 
         FarePaymentResponse data = FarePaymentResponse.builder()
@@ -535,7 +523,6 @@ public class FarePaymentService {
 
         tx.setResponseSnapshot(paymentIdentity.snapshot(data));
         transactionRepository.save(tx);
-        paymentPerf(source, "response_snapshot_complete", performanceStarted);
         log.info("Fare payment committed intent prepared: method={}, reference={}", source, refNumber);
 
         return ApiResponse.success("Fare deducted successfully!", data);
@@ -581,7 +568,6 @@ public class FarePaymentService {
         if (request != null) {
             metadata.setRequestNonce(request.getRequestNonce());
             metadata.setRequestTimestamp(request.getRequestTimestamp());
-            metadata.setOfflineCapturedAt(request.getOfflineCapturedAt());
         }
         paymentFailureRecorder.afterTransaction(() -> farePaymentAttemptService.recordFailure(
                 method,
@@ -621,7 +607,6 @@ public class FarePaymentService {
 
     private java.util.Optional<Transaction> findExistingTransaction(DeviceFareRequest request, String key,
                                                                     DevicePrincipal device, String method) {
-        long performanceStarted = System.nanoTime();
         deviceService.lockPaymentDevice(device);
         deviceService.requirePlateAssignment(device, request.getPlateNumber());
         if (key.length() < 12 || key.length() > 120) throw paymentIdentity.conflict();
@@ -635,13 +620,7 @@ public class FarePaymentService {
             if (!key.equals(tx.getIdempotencyKey())) throw paymentIdentity.conflict();
             paymentIdentity.verify(tx.getDeviceId(), tx.getRequestFingerprint(), request, device, method);
         });
-        paymentPerf(method, "idempotency_lookup_complete", performanceStarted);
         return existing;
-    }
-
-    private void paymentPerf(String method, String stage, long started) {
-        long elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
-        log.info("[PERF] payment={} stage={} elapsedMs={}", method, stage, elapsed);
     }
 
     private java.util.Optional<FareQrToken> lockedToken(String hash) {

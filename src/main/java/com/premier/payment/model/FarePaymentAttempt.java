@@ -5,6 +5,8 @@ import com.premier.driver.model.Vehicle;
 import com.premier.model.Passenger;
 import com.premier.model.PaymentMethod;
 import com.premier.model.Transaction;
+import com.premier.trip.model.TripDirection;
+import com.premier.trip.model.VehicleTrip;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -64,9 +66,26 @@ public class FarePaymentAttempt {
     @JoinColumn(name = "vehicle_id")
     private Vehicle vehicle;
 
+    @Column(name = "vehicle_plate_number", length = 40)
+    private String vehiclePlateNumber;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "driver_shift_id")
     private DriverShift driverShift;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "trip_id")
+    private VehicleTrip trip;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "trip_direction", length = 30)
+    private TripDirection tripDirection;
+
+    @Column(name = "origin_terminal", length = 80)
+    private String originTerminal;
+
+    @Column(name = "destination_terminal", length = 80)
+    private String destinationTerminal;
 
     @Column(name = "route_snapshot", length = 160)
     private String routeSnapshot;
@@ -76,6 +95,9 @@ public class FarePaymentAttempt {
 
     @Column(name = "request_timestamp")
     private LocalDateTime requestTimestamp;
+
+    @Column(name = "offline_captured_at")
+    private LocalDateTime offlineCapturedAt;
 
     @Column(name = "failure_message", length = 240)
     private String failureMessage;

@@ -40,14 +40,10 @@ public class RfidController {
 
     @PostMapping("/tap")
     public ResponseEntity<?> tapCard(@RequestBody DeviceFareRequest request) {
-        long started = System.nanoTime();
-        log.info("[PERF] payment=RFID stage=request_received elapsedMs=0");
         try {
-            ResponseEntity<?> response = ResponseEntity.ok(farePaymentService.processRfidPayment(
+            return ResponseEntity.ok(farePaymentService.processRfidPayment(
                     request,
                     DeviceContext.get()));
-            log.info("[PERF] payment=RFID stage=response_ready_after_commit elapsedMs={}", elapsedMillis(started));
-            return response;
         } catch (RuntimeException e) {
             throw e; // Preserve typed payment status/code; global handler sanitizes unexpected failures.
         }
@@ -55,14 +51,10 @@ public class RfidController {
 
     @PostMapping("/qr/process")
     public ResponseEntity<?> processQrFare(@RequestBody DeviceFareRequest request) {
-        long started = System.nanoTime();
-        log.info("[PERF] payment=QR stage=request_received elapsedMs=0");
         try {
-            ResponseEntity<?> response = ResponseEntity.ok(farePaymentService.processQrPayment(
+            return ResponseEntity.ok(farePaymentService.processQrPayment(
                     request,
                     DeviceContext.get()));
-            log.info("[PERF] payment=QR stage=response_ready_after_commit elapsedMs={}", elapsedMillis(started));
-            return response;
         } catch (RuntimeException e) {
             throw e; // Preserve typed payment status/code; global handler sanitizes unexpected failures.
         }
@@ -70,31 +62,21 @@ public class RfidController {
 
     @PostMapping("/nfc/tap")
     public ResponseEntity<?> processNfcTap(@RequestBody DeviceFareRequest request) {
-        long started = System.nanoTime();
-        log.info("[PERF] payment=NFC stage=request_received elapsedMs=0");
         try {
             String mobileNfcToken = request.getMobileNfcToken();
             if ((mobileNfcToken != null && !mobileNfcToken.isBlank())
                     || (request.getPayload() != null && !request.getPayload().isBlank())) {
-                ResponseEntity<?> response = ResponseEntity.ok(farePaymentService.processMobileNfcTokenPayment(
+                return ResponseEntity.ok(farePaymentService.processMobileNfcTokenPayment(
                         request,
                         DeviceContext.get()));
-                log.info("[PERF] payment=NFC stage=response_ready_after_commit elapsedMs={}", elapsedMillis(started));
-                return response;
             }
 
-            ResponseEntity<?> response = ResponseEntity.ok(farePaymentService.processRfidPayment(
+            return ResponseEntity.ok(farePaymentService.processRfidPayment(
                     request,
                     DeviceContext.get()));
-            log.info("[PERF] payment=NFC_RFID_FALLBACK stage=response_ready_after_commit elapsedMs={}", elapsedMillis(started));
-            return response;
         } catch (RuntimeException e) {
             throw e; // Preserve typed payment status/code; global handler sanitizes unexpected failures.
         }
-    }
-
-    private long elapsedMillis(long started) {
-        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     }
 
     @GetMapping("/vehicles")

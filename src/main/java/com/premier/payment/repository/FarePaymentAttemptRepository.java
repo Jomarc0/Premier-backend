@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 public interface FarePaymentAttemptRepository extends JpaRepository<FarePaymentAttempt, Long> {
-    @EntityGraph(attributePaths = {"passenger", "transaction", "vehicle", "driverShift", "driverShift.vehicle"})
+    @EntityGraph(attributePaths = {"passenger", "transaction", "vehicle", "driverShift", "driverShift.vehicle", "trip"})
     List<FarePaymentAttempt> findByCreatedAtBetween(LocalDateTime start, LocalDateTime end);
 
     long countByStatusAndCreatedAtBetween(FarePaymentAttemptStatus status, LocalDateTime start, LocalDateTime end);

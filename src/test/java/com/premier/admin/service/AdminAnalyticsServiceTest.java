@@ -194,4 +194,27 @@ class AdminAnalyticsServiceTest {
         assertThat(dailyBus.get("totalPassengers")).isEqualTo(10);
         assertThat(dailyBus.get("trips")).isEqualTo(2L);
     }
+
+    @Test
+    void failedAttemptDirectionComesFromItsTripSnapshotNotTheMutableRouteText() {
+        stubEmptyDashboardDependencies();
+        Vehicle bus = Vehicle.builder().id(7L).plateNumber("DAR-5315").totalCapacity(50)
+                .route("SM Terminal to Grand Terminal").build();
+        FarePaymentAttempt attempt = FarePaymentAttempt.builder().id(250L)
+                .paymentMethod(PaymentMethod.QR).status(FarePaymentAttemptStatus.FAILED)
+                .failureReason(FarePaymentFailureReason.INVALID_TOKEN).vehicle(bus)
+                .vehiclePlateNumber("DAR-5315").tripDirection(TripDirection.GRAND_TO_SM)
+                .routeSnapshot("SM Terminal to Grand Terminal").deviceId("bus-001")
+                .createdAt(LocalDateTime.now()).build();
+        when(attemptRepository.findByCreatedAtBetween(any(), any())).thenReturn(List.of(attempt));
+
+        Map<String, Object> dashboard = service.getDashboard("today", null, null,
+                null, null, null, null, "Asia/Manila");
+        Map<?, ?> transactionAnalytics = (Map<?, ?>) dashboard.get("transactionAnalytics");
+        Map<?, ?> failure = (Map<?, ?>) ((List<?>) transactionAnalytics.get("failedTransactions")).get(0);
+
+        assertThat(failure.get("direction")).isEqualTo(AdminAnalyticsService.GRAND_TO_SM);
+        assertThat(failure.get("directionLabel")).isEqualTo(AdminAnalyticsService.GRAND_TO_SM_LABEL);
+        assertThat(failure.get("terminal")).isEqualTo("bus-001");
+    }
 }

@@ -15,6 +15,7 @@ import com.premier.repository.PassengerRepository;
 import com.premier.rfid.DeviceFareRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +32,7 @@ public class FarePaymentAttemptService {
     private final PassengerRepository passengerRepository;
     private final VehicleRepository vehicleRepository;
     private final DriverShiftRepository driverShiftRepository;
+    private final com.premier.trip.repository.VehicleTripRepository tripRepository;
 
     @Transactional
     public void recordSuccess(Transaction transaction, PaymentMethod paymentMethod, String rfidUid,
@@ -55,10 +57,16 @@ public class FarePaymentAttemptService {
                 .maskedRfidUid(mask(rfidUid))
                 .deviceId(transaction.getDeviceId())
                 .vehicle(vehicle)
+                .vehiclePlateNumber(transaction.getVehiclePlateNumber())
                 .driverShift(shift)
+                .trip(transaction.getTrip())
+                .tripDirection(transaction.getTripDirection())
+                .originTerminal(transaction.getOriginTerminal())
+                .destinationTerminal(transaction.getDestinationTerminal())
                 .routeSnapshot(transaction.getRouteSnapshot())
                 .requestNonce(request != null ? clean(request.getRequestNonce()) : null)
                 .requestTimestamp(request != null ? parseRequestTimestamp(request.getRequestTimestamp()) : null)
+                .offlineCapturedAt(transaction.getOfflineCapturedAt())
                 .build());
     }
 
@@ -71,6 +79,12 @@ public class FarePaymentAttemptService {
         if (vehicle == null && shift != null) {
             vehicle = shift.getVehicle();
         }
+        LocalDateTime capturedAt = safeCapturedAt(request);
+        LocalDateTime tripMoment = capturedAt == null ? LocalDateTime.now() : capturedAt;
+        com.premier.trip.model.VehicleTrip trip = vehicle == null ? null
+                : tripRepository.findCovering(vehicle.getId(), tripMoment, PageRequest.of(0, 1))
+                        .stream().findFirst().orElse(null);
+        if (trip != null) shift = trip.getDriverShift();
 
         attemptRepository.save(FarePaymentAttempt.builder()
                 .passenger(passengerId == null ? null : passengerRepository.findById(passengerId).orElse(null))
@@ -81,10 +95,16 @@ public class FarePaymentAttemptService {
                 .maskedRfidUid(mask(rfidUid))
                 .deviceId(deviceId)
                 .vehicle(vehicle)
+                .vehiclePlateNumber(vehicle == null ? normalizePlate(plateNumber) : vehicle.getPlateNumber())
                 .driverShift(shift)
-                .routeSnapshot(vehicle != null ? vehicle.getRoute() : null)
+                .trip(trip)
+                .tripDirection(trip == null ? null : trip.getDirection())
+                .originTerminal(trip == null ? null : trip.getOriginTerminal())
+                .destinationTerminal(trip == null ? null : trip.getDestinationTerminal())
+                .routeSnapshot(trip == null ? null : trip.getDirection().routeLabel())
                 .requestNonce(request != null ? clean(request.getRequestNonce()) : null)
                 .requestTimestamp(request != null ? parseRequestTimestamp(request.getRequestTimestamp()) : null)
+                .offlineCapturedAt(capturedAt)
                 .failureMessage(truncate(message, 240))
                 .build());
     }
@@ -124,6 +144,15 @@ public class FarePaymentAttemptService {
         try {
             return LocalDateTime.ofInstant(Instant.parse(timestamp.trim()), ZoneId.of("Asia/Manila"));
         } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private LocalDateTime safeCapturedAt(DeviceFareRequest request) {
+        if (request == null) return null;
+        try {
+            return com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
+        } catch (RuntimeException ignored) {
             return null;
         }
     }
