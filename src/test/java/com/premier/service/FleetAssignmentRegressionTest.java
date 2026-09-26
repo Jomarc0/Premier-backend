@@ -51,14 +51,13 @@ class FleetAssignmentRegressionTest {
             assertThat(assignments.findByVehicleIdAndStatus(vehicle.getId(),AssignmentStatus.ACTIVE)).isPresent();
         } finally { pool.shutdownNow(); }
     }
-    @Test void activeShiftPreventsUnassignmentAndSilentReassignment() {
+    @Test void activeShiftDoesNotControlOptionalFleetAssignment() {
         var admin=admin(); var driver=driver(); var vehicle=vehicle(); var alternate=vehicle();
         var assigned=fleet.assign(admin,driver.getId(),vehicle.getId()).getData();
         var shift=shifts.saveAndFlush(DriverShift.builder().driver(driver).vehicle(vehicle).status(ShiftStatus.ACTIVE).build());
-        assertThatThrownBy(() -> fleet.unassign(admin,assigned.id())).isInstanceOf(ClientException.class);
-        assertThatThrownBy(() -> fleet.assign(admin,driver.getId(),alternate.getId())).isInstanceOf(ClientException.class);
-        assertThat(assignments.findById(assigned.id()).orElseThrow().getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(fleet.unassign(admin,assigned.id()).getData()).isEqualTo("COMPLETED");
+        assertThat(fleet.assign(admin,driver.getId(),alternate.getId()).getData().vehicleId()).isEqualTo(alternate.getId());
+        assertThat(assignments.findById(assigned.id()).orElseThrow().getStatus()).isEqualTo(AssignmentStatus.COMPLETED);
         assertThat(shifts.findById(shift.getId()).orElseThrow().getStatus()).isEqualTo(ShiftStatus.ACTIVE);
-        assertThat(fleet.assign(admin,driver.getId(),vehicle.getId()).getData().id()).isEqualTo(assigned.id());
     }
 }

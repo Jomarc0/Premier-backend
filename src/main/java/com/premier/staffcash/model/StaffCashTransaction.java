@@ -46,9 +46,12 @@ public class StaffCashTransaction {
     @JoinColumn(name = "vehicle_id", nullable = false)
     private Vehicle vehicle;
 
+    @Column(name = "vehicle_plate_number", length = 40)
+    private String vehiclePlateNumber;
+
     @JsonIgnore
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "driver_shift_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "driver_shift_id")
     private DriverShift driverShift;
 
     @Column(name = "device_id", nullable = false, length = 80)
@@ -115,6 +118,7 @@ public class StaffCashTransaction {
     @PrePersist
     void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
+        if (vehiclePlateNumber == null && vehicle != null) vehiclePlateNumber = vehicle.getPlateNumber();
     }
 }
 

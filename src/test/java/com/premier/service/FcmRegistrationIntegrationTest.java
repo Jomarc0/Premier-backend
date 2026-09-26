@@ -86,7 +86,7 @@ class FcmRegistrationIntegrationTest {
                     if (providerFails) throw new java.util.concurrent.TimeoutException();
                     return "projects/synthetic/messages/accepted";
                 });
-        var worker = new com.premier.payment.service.PaymentNotificationService(notices, passengers, tokens, transactions, sender);
+        var worker = new com.premier.payment.service.PaymentNotificationService(notices, passengers, tokens, ledger, transactions, sender);
         org.springframework.test.util.ReflectionTestUtils.setField(worker, "enabled", true);
         worker.deliverPending();
         org.mockito.Mockito.verify(sender).sendPayment(org.mockito.ArgumentMatchers.eq(owner.getId()), org.mockito.ArgumentMatchers.eq(destination), org.mockito.ArgumentMatchers.eq("FARE"),

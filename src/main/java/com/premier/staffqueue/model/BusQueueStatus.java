@@ -1,6 +1,9 @@
 package com.premier.staffqueue.model;
 
 public enum BusQueueStatus {
+    WAITING("Waiting"),
+    BOARDING("Boarding"),
+    CANCELLED("Cancelled"),
     GPS_UNKNOWN("GPS unavailable"),
     AT_TERMINAL("At Terminal"),
     DEPARTED("Departed"),

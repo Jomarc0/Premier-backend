@@ -4,10 +4,8 @@ import com.premier.device.model.Device;
 import com.premier.device.model.DeviceStatus;
 import com.premier.device.repository.DeviceRepository;
 import com.premier.driver.model.DriverLocation;
-import com.premier.driver.model.DriverShift;
 import com.premier.driver.model.Vehicle;
 import com.premier.driver.repository.DriverLocationRepository;
-import com.premier.driver.repository.DriverShiftRepository;
 import com.premier.driver.repository.VehicleRepository;
 import com.premier.model.Transaction;
 import com.premier.model.TransactionStatus;
@@ -70,7 +68,6 @@ public class AdminAnalyticsService {
     private final FarePaymentAttemptRepository farePaymentAttemptRepository;
     private final StaffCashTransactionRepository staffCashTransactionRepository;
     private final VehicleRepository vehicleRepository;
-    private final DriverShiftRepository driverShiftRepository;
     private final DriverLocationRepository driverLocationRepository;
     private final DeviceRepository deviceRepository;
     private final SupportTicketRepository supportTicketRepository;
@@ -102,8 +99,6 @@ public class AdminAnalyticsService {
         DateWindow todayWindow = dayWindow(today);
         List<FareRecord> todayRecords = sameWindow(window, todayWindow) ? selected
                 : loadFareRecords(todayWindow).stream().filter(filter::matches).toList();
-        List<DriverShift> shifts = driverShiftRepository.findByShiftStartBetween(window.start(), window.end()).stream()
-                .filter(shift -> busMatches(shift.getVehicle(), filter.busId())).toList();
         List<Device> devices = deviceRepository.findAll().stream()
                 .filter(device -> filter.busId() == null || filter.busId().equalsIgnoreCase(device.getPlateNumber())).toList();
         List<DriverLocation> locations = driverLocationRepository.findLatestPerPlate().stream()
@@ -129,7 +124,7 @@ public class AdminAnalyticsService {
         response.put("definitions", definitions());
         response.put("dataQuality", dataQuality(selected, selectedTrips));
         response.put("generatedAt", OffsetDateTime.now(zone).toString());
-        response.put("charts", legacyCharts(response, shifts));
+        response.put("charts", legacyCharts(response));
         return response;
     }
 
@@ -383,7 +378,7 @@ public class AdminAnalyticsService {
         return mapOf("online", online, "offline", offline, "missingGpsUpdates", locations.stream().filter(this::missingGps).count(),
                 "availability", devices.isEmpty() ? null : percent(online, devices.size()), "terminals", terminals,
                 "queues", terminalQueues(filter), "queueHistoryAvailable", false,
-                "queueHistoryMessage", "Maximum queue, average queue, and processing time are unavailable because queue snapshots and service timestamps are not stored.");
+                "queueHistoryMessage", "Queue history is now stored; historical throughput aggregates are not yet exposed by this report.");
     }
 
     private List<Map<String, Object>> terminalQueues(AnalyticsFilter filter) {
@@ -392,6 +387,8 @@ public class AdminAnalyticsService {
             List<BusQueueItemResponse> queues = new ArrayList<>();
             queues.addAll(dashboard.incomingToSmTerminal());
             queues.addAll(dashboard.incomingToGrandTerminal());
+            if (dashboard.smTerminal().boarding() != null) queues.add(dashboard.smTerminal().boarding());
+            if (dashboard.grandTerminal().boarding() != null) queues.add(dashboard.grandTerminal().boarding());
             return queues.stream().filter(q -> filter == null || filter.busId() == null || filter.busId().equalsIgnoreCase(q.plateNumber()))
                     .filter(q -> filter == null || filter.direction() == null || filter.direction().equals(normalizeDirection(q.routeDirection())))
                     .map(q -> mapOf("terminal", destinationLabel(normalizeDirection(q.routeDirection())), "bus", q.plateNumber(), "name", q.plateNumber(),
@@ -477,7 +474,7 @@ public class AdminAnalyticsService {
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> legacyCharts(Map<String, Object> response, List<DriverShift> ignoredShifts) {
+    private Map<String, Object> legacyCharts(Map<String, Object> response) {
         Map<String, Object> trends = (Map<String, Object>) response.get("trends");
         Map<String, Object> payments = (Map<String, Object>) response.get("paymentAnalytics");
         Map<String, Object> passengers = (Map<String, Object>) response.get("passengerAnalytics");
@@ -498,8 +495,8 @@ public class AdminAnalyticsService {
     }
 
     private FareRecord cashRecord(StaffCashTransaction tx) {
-        String bus = tx.getTrip() != null ? tx.getTrip().getVehiclePlateNumber()
-                : tx.getVehicle() == null ? null : tx.getVehicle().getPlateNumber();
+        String bus = clean(tx.getVehiclePlateNumber());
+        if (bus == null && tx.getVehicle() != null) bus = clean(tx.getVehicle().getPlateNumber());
         LocalDateTime eventAt = tx.getOfflineCapturedAt() == null ? tx.getCreatedAt() : tx.getOfflineCapturedAt();
         return new FareRecord(eventAt, tx.getFinalFare(), bus,
                 tx.getTripDirection() == null ? normalizeDirection(tx.getRouteSnapshot()) : tx.getTripDirection().name(),
@@ -509,7 +506,6 @@ public class AdminAnalyticsService {
 
     private AttemptRecord attemptRecord(FarePaymentAttempt a) {
         Vehicle vehicle = a.getVehicle();
-        if (vehicle == null && a.getDriverShift() != null) vehicle = a.getDriverShift().getVehicle();
         String bus = clean(a.getVehiclePlateNumber());
         if (bus == null && vehicle != null) bus = clean(vehicle.getPlateNumber());
         LocalDateTime eventAt = a.getOfflineCapturedAt() == null ? a.getCreatedAt() : a.getOfflineCapturedAt();
@@ -533,9 +529,7 @@ public class AdminAnalyticsService {
 
     private String transactionBus(Transaction tx) {
         if (clean(tx.getVehiclePlateNumber()) != null) return clean(tx.getVehiclePlateNumber());
-        if (tx.getTrip() != null && clean(tx.getTrip().getVehiclePlateNumber()) != null) return clean(tx.getTrip().getVehiclePlateNumber());
         if (tx.getVehicle() != null) return clean(tx.getVehicle().getPlateNumber());
-        if (tx.getDriverShift() != null && tx.getDriverShift().getVehicle() != null) return clean(tx.getDriverShift().getVehicle().getPlateNumber());
         if (tx.getDescription() != null && tx.getDescription().contains("|")) {
             String[] parts = tx.getDescription().split("\\|");
             return parts.length > 1 ? clean(parts[1]) : null;

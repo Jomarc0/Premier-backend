@@ -112,6 +112,29 @@ public class DeviceService {
         }
     }
 
+    /**
+     * Resolves the operational vehicle from the authenticated device registration.
+     * Client-supplied plate numbers are validation input only; they are never the
+     * source of truth for a payment or GPS update.
+     */
+    public Vehicle requireAssignedVehicle(DevicePrincipal principal) {
+        if (principal == null) {
+            throw new SecurityException("Device authentication required.");
+        }
+        if (principal.vehicleId() == null) {
+            throw new SecurityException("Device is not assigned to a vehicle.");
+        }
+        Vehicle vehicle = vehicleRepository.findById(principal.vehicleId())
+                .orElseThrow(() -> new SecurityException("Assigned vehicle not found."));
+        if (vehicle.getStatus() != com.premier.driver.model.VehicleStatus.ACTIVE) {
+            throw new SecurityException("Assigned vehicle is not active.");
+        }
+        if (!java.util.Objects.equals(normalizePlate(vehicle.getPlateNumber()), normalizePlate(principal.plateNumber()))) {
+            throw new SecurityException("Device vehicle assignment is inconsistent.");
+        }
+        return vehicle;
+    }
+
     @Transactional(readOnly = true)
     public ApiResponse<List<DeviceProvisioningResponse>> listDevices() {
         return ApiResponse.success("Devices fetched.",

@@ -1,8 +1,6 @@
 package com.premier.payment.service;
 
-import com.premier.driver.model.DriverShift;
 import com.premier.driver.model.Vehicle;
-import com.premier.driver.repository.DriverShiftRepository;
 import com.premier.driver.repository.VehicleRepository;
 import com.premier.model.Passenger;
 import com.premier.model.PaymentMethod;
@@ -15,7 +13,6 @@ import com.premier.repository.PassengerRepository;
 import com.premier.rfid.DeviceFareRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,8 +28,6 @@ public class FarePaymentAttemptService {
     private final FarePaymentAttemptRepository attemptRepository;
     private final PassengerRepository passengerRepository;
     private final VehicleRepository vehicleRepository;
-    private final DriverShiftRepository driverShiftRepository;
-    private final com.premier.trip.repository.VehicleTripRepository tripRepository;
 
     @Transactional
     public void recordSuccess(Transaction transaction, PaymentMethod paymentMethod, String rfidUid,
@@ -41,11 +36,7 @@ public class FarePaymentAttemptService {
             return;
         }
 
-        DriverShift shift = transaction.getDriverShift();
         Vehicle vehicle = transaction.getVehicle();
-        if (vehicle == null && shift != null) {
-            vehicle = shift.getVehicle();
-        }
 
         attemptRepository.save(FarePaymentAttempt.builder()
                 .passenger(transaction.getPassenger())
@@ -58,8 +49,6 @@ public class FarePaymentAttemptService {
                 .deviceId(transaction.getDeviceId())
                 .vehicle(vehicle)
                 .vehiclePlateNumber(transaction.getVehiclePlateNumber())
-                .driverShift(shift)
-                .trip(transaction.getTrip())
                 .tripDirection(transaction.getTripDirection())
                 .originTerminal(transaction.getOriginTerminal())
                 .destinationTerminal(transaction.getDestinationTerminal())
@@ -75,16 +64,9 @@ public class FarePaymentAttemptService {
                               String plateNumber, String deviceId, DeviceFareRequest request,
                               BigDecimal amount, FarePaymentFailureReason reason, String message) {
         Vehicle vehicle = resolveVehicle(plateNumber);
-        DriverShift shift = resolveShift(plateNumber);
-        if (vehicle == null && shift != null) {
-            vehicle = shift.getVehicle();
-        }
         LocalDateTime capturedAt = safeCapturedAt(request);
-        LocalDateTime tripMoment = capturedAt == null ? LocalDateTime.now() : capturedAt;
-        com.premier.trip.model.VehicleTrip trip = vehicle == null ? null
-                : tripRepository.findCovering(vehicle.getId(), tripMoment, PageRequest.of(0, 1))
-                        .stream().findFirst().orElse(null);
-        if (trip != null) shift = trip.getDriverShift();
+        String route = vehicle == null ? null : clean(vehicle.getRoute());
+        com.premier.trip.model.TripDirection direction = directionFor(route);
 
         attemptRepository.save(FarePaymentAttempt.builder()
                 .passenger(passengerId == null ? null : passengerRepository.findById(passengerId).orElse(null))
@@ -96,12 +78,10 @@ public class FarePaymentAttemptService {
                 .deviceId(deviceId)
                 .vehicle(vehicle)
                 .vehiclePlateNumber(vehicle == null ? normalizePlate(plateNumber) : vehicle.getPlateNumber())
-                .driverShift(shift)
-                .trip(trip)
-                .tripDirection(trip == null ? null : trip.getDirection())
-                .originTerminal(trip == null ? null : trip.getOriginTerminal())
-                .destinationTerminal(trip == null ? null : trip.getDestinationTerminal())
-                .routeSnapshot(trip == null ? null : trip.getDirection().routeLabel())
+                .tripDirection(direction)
+                .originTerminal(direction == null ? null : direction.origin())
+                .destinationTerminal(direction == null ? null : direction.destination())
+                .routeSnapshot(route)
                 .requestNonce(request != null ? clean(request.getRequestNonce()) : null)
                 .requestTimestamp(request != null ? parseRequestTimestamp(request.getRequestTimestamp()) : null)
                 .offlineCapturedAt(capturedAt)
@@ -130,11 +110,18 @@ public class FarePaymentAttemptService {
         return plate == null ? null : vehicleRepository.findByPlateNumber(plate).orElse(null);
     }
 
-    private DriverShift resolveShift(String plateNumber) {
-        String plate = normalizePlate(plateNumber);
-        return plate == null ? null : driverShiftRepository
-                .findByVehiclePlateNumberAndStatus(plate, com.premier.driver.model.ShiftStatus.ACTIVE)
-                .orElse(null);
+    private com.premier.trip.model.TripDirection directionFor(String route) {
+        if (route == null) return null;
+        String normalized = route.toLowerCase().replace("sm lipa", "sm terminal")
+                .replace("→", " to ").replace("->", " to ").replace("_", " ")
+                .replaceAll("\\s+", " ").trim();
+        if (normalized.startsWith("sm terminal") && normalized.contains("grand terminal")) {
+            return com.premier.trip.model.TripDirection.SM_TO_GRAND;
+        }
+        if (normalized.startsWith("grand terminal") && normalized.contains("sm terminal")) {
+            return com.premier.trip.model.TripDirection.GRAND_TO_SM;
+        }
+        return null;
     }
 
     private LocalDateTime parseRequestTimestamp(String timestamp) {

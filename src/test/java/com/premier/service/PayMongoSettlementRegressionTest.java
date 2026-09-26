@@ -3,6 +3,8 @@ package com.premier.service;
 import com.premier.model.*;
 import com.premier.repository.*;
 import com.premier.request.TopUpRequestDto;
+import com.premier.response.ApiResponse;
+import com.premier.response.TopUpResponse;
 import com.premier.exception.ClientException;
 import com.premier.payment.repository.ProviderEventRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,6 +47,7 @@ class PayMongoSettlementRegressionTest {
     TopUpRequest pending(Passenger passenger) {
         return topups.saveAndFlush(TopUpRequest.builder().passenger(passenger).amount(new BigDecimal("100.00"))
                 .paymongoLinkId("link_" + UUID.randomUUID().toString().replace("-", ""))
+                .idempotencyKey(UUID.randomUUID().toString()).paymentMethod("GCASH")
                 .referenceNumber("PMR-" + UUID.randomUUID()).build());
     }
     Map<String, Object> resource(TopUpRequest request, int amount, String currency, String status) {
@@ -113,6 +116,7 @@ class PayMongoSettlementRegressionTest {
     }
     @Test void initiationTimeoutKeepsRecoveryReferenceAndNeverRetriesPost() {
         var passenger = passenger(); var dto = new TopUpRequestDto(); dto.setAmount(new BigDecimal("100.00"));
+        dto.setIdempotencyKey(UUID.randomUUID().toString());
         server.expect(requestTo("https://api.paymongo.com/v1/links"))
                 .andExpect(http -> assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse())
                 .andRespond(withException(new java.net.SocketTimeoutException("synthetic timeout")));
@@ -120,7 +124,34 @@ class PayMongoSettlementRegressionTest {
         assertThat(response.isSuccess()).isFalse(); assertThat(response.getCode()).isEqualTo("SERVICE_UNAVAILABLE");
         var request = topups.findByReferenceNumber(response.getReference()).orElseThrow();
         assertThat(request.getStatus()).isEqualTo(TransactionStatus.PROCESSING); assertThat(request.getPaymongoLinkId()).isNull();
+        var retry = paymongo.initiateTopUp(passenger, dto);
+        assertThat(retry.getData().getTopUpId()).isEqualTo(request.getId());
+        assertThat(topups.findAll().stream().filter(t -> dto.getIdempotencyKey().equals(t.getIdempotencyKey()))).hasSize(1);
         assertThat(count(passenger)).isZero();
+    }
+    @Test void concurrentInitiationWithSameKeyCreatesOneTopUpAndOneProviderLink() throws Exception {
+        var passenger = passenger(); var dto = new TopUpRequestDto();
+        dto.setAmount(new BigDecimal("100.00")); dto.setPaymentMethod("GCASH");
+        dto.setIdempotencyKey(UUID.randomUUID().toString());
+        String linkId = "link_" + UUID.randomUUID().toString().replace("-", "");
+        server.expect(org.springframework.test.web.client.ExpectedCount.once(), requestTo("https://api.paymongo.com/v1/links"))
+                .andRespond(withSuccess(mapper.writeValueAsString(Map.of("data", Map.of(
+                        "id", linkId, "type", "link", "attributes", Map.of(
+                                "amount", 10000, "currency", "PHP", "status", "active",
+                                "livemode", false, "checkout_url", "https://checkout.paymongo.com/test")))),
+                        org.springframework.http.MediaType.APPLICATION_JSON));
+        var executor = Executors.newFixedThreadPool(10); var start = new CountDownLatch(1);
+        try {
+            List<Future<ApiResponse<TopUpResponse>>> calls = new ArrayList<>();
+            for (int i = 0; i < 10; i++) calls.add(executor.submit(() -> {
+                start.await();
+                return paymongo.initiateTopUp(passenger, dto);
+            }));
+            start.countDown();
+            for (var call : calls) assertThat(call.get(30, TimeUnit.SECONDS).getData()).isNotNull();
+        } finally { executor.shutdownNow(); }
+        assertThat(topups.findAll().stream().filter(t -> dto.getIdempotencyKey().equals(t.getIdempotencyKey())))
+                .singleElement().satisfies(t -> assertThat(t.getPaymongoLinkId()).isEqualTo(linkId));
     }
     @Test void providerReconciliationRepairsMissedWebhookOnce() throws Exception {
         var passenger = passenger(); var request = pending(passenger);

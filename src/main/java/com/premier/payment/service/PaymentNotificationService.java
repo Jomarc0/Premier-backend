@@ -1,7 +1,10 @@
 package com.premier.payment.service;
 import com.premier.payment.model.PaymentNotification;
 import com.premier.payment.repository.PaymentNotificationRepository;
+import com.premier.model.Passenger;
 import com.premier.repository.*;
+import com.premier.response.*;
+import com.premier.exception.ClientException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -10,6 +13,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.*;
 import org.springframework.transaction.annotation.*;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.*;
 
@@ -19,6 +25,7 @@ public class PaymentNotificationService {
     private final PaymentNotificationRepository notices;
     private final PassengerRepository passengers;
     private final PassengerFcmTokenRepository tokens;
+    private final TransactionRepository transactionRepository;
     private final PlatformTransactionManager transactions;
     private final PaymentPushSender push;
     @Value("${payment.notifications.enabled:true}") private boolean enabled;
@@ -27,6 +34,66 @@ public class PaymentNotificationService {
         PaymentNotification n = new PaymentNotification(); n.setPassengerId(passengerId); n.setReference(reference); n.setKind(kind);
         notices.save(n);
         log.debug("[FCM] stage=ENQUEUED passenger={} reference={} kind={} notification={}", passengerId, reference, kind, n.getId());
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResponse<NotificationHistoryResponse> history(Passenger passenger, int page, int size) {
+        if (page < 0 || size < 1 || size > 50)
+            throw new ClientException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "Page must be non-negative and size must be between 1 and 50.");
+        log.info("[Notifications] Fetching history passenger={} page={} size={}", passenger.getId(), page, size);
+        var notifications = notices.findByPassengerIdOrderByCreatedAtDesc(passenger.getId(), PageRequest.of(page, size));
+        var content = notifications.getContent().stream().map(this::response).toList();
+        return ApiResponse.success("Notifications fetched.", NotificationHistoryResponse.builder()
+                .content(content)
+                .page(notifications.getNumber())
+                .size(notifications.getSize())
+                .totalElements(notifications.getTotalElements())
+                .totalPages(notifications.getTotalPages())
+                .unreadCount(notices.countByPassengerIdAndReadAtIsNull(passenger.getId()))
+                .build());
+    }
+
+    @Transactional
+    public ApiResponse<NotificationResponse> markRead(Passenger passenger, Long id) {
+        var notification = notices.findByIdAndPassengerId(id, passenger.getId()).orElseThrow(() ->
+                new ClientException(HttpStatus.NOT_FOUND, "NOTIFICATION_NOT_FOUND", "Notification not found."));
+        if (notification.getReadAt() == null) notification.setReadAt(Instant.now());
+        return ApiResponse.success("Notification marked as read.", response(notification));
+    }
+
+    @Transactional
+    public ApiResponse<Map<String, Object>> markAllRead(Passenger passenger) {
+        int updated = notices.markAllRead(passenger.getId(), Instant.now());
+        return ApiResponse.success("Notifications marked as read.", Map.of("updated", updated, "unreadCount", 0));
+    }
+
+    private NotificationResponse response(PaymentNotification notification) {
+        var transaction = transactionRepository.findByReferenceNumberAndPassengerId(
+                notification.getReference(), notification.getPassengerId());
+        String title;
+        String message;
+        if ("TOPUP".equals(notification.getKind())) {
+            title = "Top-up successful";
+            message = transaction.map(value -> money(value.getAmount()) + " added. New balance: "
+                    + money(value.getBalanceAfter()) + ".").orElse("Your card balance was topped up successfully.");
+        } else {
+            title = "Fare deducted";
+            message = transaction.map(value -> money(value.getAmount()) + " paid. Remaining balance: "
+                    + money(value.getBalanceAfter()) + ".").orElse("Your fare payment was completed successfully.");
+        }
+        return NotificationResponse.builder()
+                .id(notification.getId())
+                .title(title)
+                .message(message)
+                .type(notification.getKind())
+                .reference(notification.getReference())
+                .read(notification.getReadAt() != null)
+                .createdAt(notification.getCreatedAt())
+                .build();
+    }
+
+    private String money(java.math.BigDecimal amount) {
+        return amount == null ? "\u20b10.00" : "\u20b1" + amount.setScale(2, RoundingMode.HALF_UP).toPlainString();
     }
     @Scheduled(fixedDelayString = "${payment.notifications.interval-ms:15000}", initialDelay = 15000)
     public void deliverPending() {

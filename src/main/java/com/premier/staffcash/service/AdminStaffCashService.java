@@ -144,8 +144,10 @@ public class AdminStaffCashService {
     private AdminStaffCashTransaction transaction(StaffCashTransaction tx) {
         return AdminStaffCashTransaction.builder().id(tx.getId()).staffId(tx.getStaff().getId())
                 .staffName(tx.getStaff().getFullName()).referenceNumber(tx.getReferenceNumber())
-                .plateNumber(tx.getVehicle().getPlateNumber()).deviceId(tx.getDeviceId())
-                .driverShiftId(tx.getDriverShift().getId()).route(tx.getRouteSnapshot()).terminal(tx.getTerminalSnapshot())
+                .plateNumber(tx.getVehiclePlateNumber() != null ? tx.getVehiclePlateNumber()
+                        : tx.getVehicle() == null ? null : tx.getVehicle().getPlateNumber()).deviceId(tx.getDeviceId())
+                .driverShiftId(tx.getDriverShift() == null ? null : tx.getDriverShift().getId())
+                .route(tx.getRouteSnapshot()).terminal(tx.getTerminalSnapshot())
                 .fareCategory(tx.getFareCategory()).baseFare(tx.getBaseFare()).discountAmount(tx.getDiscountAmount())
                 .finalFare(tx.getFinalFare()).createdAt(tx.getCreatedAt()).offlineCapturedAt(tx.getOfflineCapturedAt()).build();
     }

@@ -3,7 +3,6 @@ package com.premier.admin.service;
 import com.premier.device.repository.DeviceRepository;
 import com.premier.driver.model.Vehicle;
 import com.premier.driver.repository.DriverLocationRepository;
-import com.premier.driver.repository.DriverShiftRepository;
 import com.premier.driver.repository.VehicleRepository;
 import com.premier.model.Passenger;
 import com.premier.model.PaymentMethod;
@@ -50,7 +49,6 @@ class AdminAnalyticsServiceTest {
     @Mock FarePaymentAttemptRepository attemptRepository;
     @Mock StaffCashTransactionRepository cashRepository;
     @Mock VehicleRepository vehicleRepository;
-    @Mock DriverShiftRepository shiftRepository;
     @Mock DriverLocationRepository locationRepository;
     @Mock DeviceRepository deviceRepository;
     @Mock SupportTicketRepository ticketRepository;
@@ -62,7 +60,7 @@ class AdminAnalyticsServiceTest {
     @BeforeEach
     void setUp() {
         service = new AdminAnalyticsService(transactionRepository, attemptRepository, cashRepository,
-                vehicleRepository, shiftRepository, locationRepository, deviceRepository, ticketRepository, queueService,
+                vehicleRepository, locationRepository, deviceRepository, ticketRepository, queueService,
                 tripRepository);
     }
 
@@ -71,7 +69,6 @@ class AdminAnalyticsServiceTest {
         when(attemptRepository.findByCreatedAtBetween(any(), any())).thenReturn(List.of());
         when(cashRepository.findByCreatedAtBetweenOrderByCreatedAtDesc(any(), any())).thenReturn(List.of());
         when(vehicleRepository.findAll()).thenReturn(List.of());
-        when(shiftRepository.findByShiftStartBetween(any(), any())).thenReturn(List.of());
         when(locationRepository.findLatestPerPlate()).thenReturn(List.of());
         when(deviceRepository.findAll()).thenReturn(List.of());
         when(ticketRepository.findTop10ByOrderByCreatedAtDesc()).thenReturn(List.of());

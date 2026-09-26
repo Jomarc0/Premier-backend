@@ -22,7 +22,6 @@ public class FleetAssignmentService {
     private final DriverRepository driverRepository;
     private final VehicleRepository vehicleRepository;
     private final ActivityLogRepository activityLogRepository;
-    private final DriverShiftRepository shiftRepository;
 
     @Transactional(readOnly = true)
     public ApiResponse<List<AssignmentView>> activeAssignments() {
@@ -42,15 +41,13 @@ public class FleetAssignmentService {
 
         assignmentRepository.findByDriverIdAndStatus(driverId, AssignmentStatus.ACTIVE)
                 .filter(row -> !row.getVehicle().getId().equals(vehicleId))
-                .ifPresent(row -> { throw conflict("End the current shift and unassign this driver before reassignment."); });
+                .ifPresent(row -> { throw conflict("Unassign this driver before reassignment."); });
         assignmentRepository.findByVehicleIdAndStatus(vehicleId, AssignmentStatus.ACTIVE)
                 .filter(row -> !row.getDriver().getId().equals(driverId))
-                .ifPresent(row -> { throw conflict("End the current shift and unassign this vehicle before reassignment."); });
+                .ifPresent(row -> { throw conflict("Unassign this vehicle before reassignment."); });
 
         var existing = assignmentRepository.findByDriverIdAndStatus(driverId, AssignmentStatus.ACTIVE);
         if (existing.isPresent()) return ApiResponse.success("Driver is already assigned to this vehicle.", AssignmentView.from(existing.get()));
-        requireNoActiveShift(driverId, vehicle.getPlateNumber());
-
         DriverAssignment assignment = assignmentRepository
                 .findByDriverIdAndStatus(driverId, AssignmentStatus.ACTIVE)
                 .filter(row -> row.getVehicle().getId().equals(vehicleId))
@@ -73,7 +70,6 @@ public class FleetAssignmentService {
         DriverAssignment assignment = assignmentRepository.findById(id).orElseThrow();
         if (assignment.getStatus() != AssignmentStatus.ACTIVE)
             return ApiResponse.success("Driver and vehicle already unassigned.", "COMPLETED");
-        requireNoActiveShift(assignment.getDriver().getId(), assignment.getVehicle().getPlateNumber());
         complete(assignment);
         activityLogRepository.save(ActivityLog.builder().admin(admin)
                 .action("UNASSIGN_DRIVER_VEHICLE").targetType("DRIVER_ASSIGNMENT")
@@ -91,12 +87,6 @@ public class FleetAssignmentService {
     private ClientException conflict(String message) {
         return new ClientException(HttpStatus.CONFLICT, "FLEET_ASSIGNMENT_CONFLICT", message);
     }
-    private void requireNoActiveShift(Long driverId, String plate) {
-        if (shiftRepository.findByDriverIdAndStatus(driverId, ShiftStatus.ACTIVE).isPresent()
-                || shiftRepository.findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE).isPresent())
-            throw conflict("End the active shift before changing its assignment.");
-    }
-
     public record AssignmentView(Long id, Long driverId, String driverName,
                                  Long vehicleId, String plateNumber, LocalDateTime assignedAt) {
         static AssignmentView from(DriverAssignment row) {

@@ -5,9 +5,7 @@ import com.premier.admin.model.AdminRole;
 import com.premier.admin.repository.AdminRepository;
 import com.premier.device.security.DevicePrincipal;
 import com.premier.device.service.DeviceService;
-import com.premier.driver.model.DriverShift;
-import com.premier.driver.model.ShiftStatus;
-import com.premier.driver.repository.DriverShiftRepository;
+import com.premier.driver.model.Vehicle;
 import com.premier.repository.PassengerRepository;
 import com.premier.response.ApiResponse;
 import com.premier.response.FarePaymentResponse;
@@ -35,10 +33,8 @@ public class StaffCashFareService {
     private final StaffCashTransactionRepository transactionRepository;
     private final AdminRepository adminRepository;
     private final PassengerRepository passengerRepository;
-    private final DriverShiftRepository shiftRepository;
     private final DeviceService deviceService;
     private final com.premier.payment.service.PaymentIdentity paymentIdentity;
-    private final com.premier.trip.service.VehicleTripService tripService;
 
     @Value("${fare.fixed-amount:60.00}")
     private BigDecimal regularFare;
@@ -87,27 +83,24 @@ public class StaffCashFareService {
         deviceService.requirePlateAssignment(device, request.getPlateNumber());
         deviceService.validateFreshNonce(device, request.getRequestNonce(), request.getRequestTimestamp());
 
-        String plate = normalizePlate(request.getPlateNumber());
+        Vehicle vehicle = deviceService.requireAssignedVehicle(device);
+        String plate = normalizePlate(vehicle.getPlateNumber());
         LocalDateTime offlineCapturedAt = com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
-        DriverShift shift = (offlineCapturedAt == null
-                ? shiftRepository.findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE)
-                : shiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(plate, offlineCapturedAt)
-                    .filter(row -> row.getShiftEnd() == null || !offlineCapturedAt.isAfter(row.getShiftEnd())))
-                .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "RECONCILIATION_REQUIRED", "Vehicle has no matching driver shift for this fare."));
 
         BigDecimal discount = card.getPurpose() == StaffCashCardPurpose.DISCOUNTED_CASH
                 ? regularFare.multiply(discountRate)
                 : BigDecimal.ZERO;
         BigDecimal finalFare = regularFare.subtract(discount);
-        var trip = tripService.requireForFare(shift.getVehicle().getId(), offlineCapturedAt);
-        shift = trip.getDriverShift();
-        String route = trip.getDirection().routeLabel();
+        String route = clean(vehicle.getRoute());
+        com.premier.trip.model.TripDirection direction = directionFor(route);
+        String origin = direction == null ? originTerminal(route) : direction.origin();
+        String destination = direction == null ? destinationTerminal(route) : direction.destination();
 
         StaffCashTransaction tx = StaffCashTransaction.builder()
                 .staff(card.getStaff())
                 .operationCard(card)
-                .vehicle(shift.getVehicle())
-                .driverShift(shift)
+                .vehicle(vehicle)
+                .vehiclePlateNumber(plate)
                 .deviceId(device.deviceId())
                 .fareCategory(card.getPurpose())
                 .baseFare(regularFare)
@@ -119,11 +112,10 @@ public class StaffCashFareService {
                 .offlineTransactionId(clean(request.getOfflineTransactionId()))
                 .offlineCapturedAt(offlineCapturedAt)
                 .routeSnapshot(route)
-                .terminalSnapshot(trip.getOriginTerminal())
-                .trip(trip)
-                .tripDirection(trip.getDirection())
-                .originTerminal(trip.getOriginTerminal())
-                .destinationTerminal(trip.getDestinationTerminal())
+                .terminalSnapshot(origin)
+                .tripDirection(direction)
+                .originTerminal(origin)
+                .destinationTerminal(destination)
                 .requestTimestamp(parseTimestamp(request.getRequestTimestamp()))
                 .build();
         transactionRepository.save(tx);
@@ -205,7 +197,7 @@ public class StaffCashFareService {
                 .cardNumber(null).rfidUid(null).baseFare(tx.getBaseFare())
                 .deductedFare(tx.getFinalFare()).discountType(tx.getFareCategory().name())
                 .referenceNumber(tx.getReferenceNumber()).source("CASH")
-                .plateNumber(tx.getVehicle().getPlateNumber()).timestamp(tx.getCreatedAt()).build();
+                .plateNumber(plateFor(tx)).timestamp(tx.getCreatedAt()).build();
     }
 
     private StaffCashCardResponse toCardResponse(StaffCashCard card) {
@@ -216,7 +208,7 @@ public class StaffCashFareService {
 
     private StaffCashTransactionItem toItem(StaffCashTransaction tx) {
         return StaffCashTransactionItem.builder().id(tx.getId()).referenceNumber(tx.getReferenceNumber())
-                .plateNumber(tx.getVehicle().getPlateNumber()).deviceId(tx.getDeviceId())
+                .plateNumber(plateFor(tx)).deviceId(tx.getDeviceId())
                 .route(tx.getRouteSnapshot()).terminal(tx.getTerminalSnapshot())
                 .fareCategory(tx.getFareCategory()).finalFare(tx.getFinalFare()).createdAt(tx.getCreatedAt()).build();
     }
@@ -235,6 +227,31 @@ public class StaffCashFareService {
         if (normalized.startsWith("sm terminal")) return "SM Terminal";
         if (normalized.startsWith("grand terminal")) return "Grand Terminal";
         return route.contains(" to ") ? route.substring(0, route.indexOf(" to ")).trim() : null;
+    }
+
+    private String destinationTerminal(String route) {
+        if (route == null) return null;
+        int separator = route.toLowerCase().indexOf(" to ");
+        return separator < 0 ? null : route.substring(separator + 4).trim();
+    }
+
+    private com.premier.trip.model.TripDirection directionFor(String route) {
+        if (route == null) return null;
+        String normalized = route.toLowerCase().replace("sm lipa", "sm terminal")
+                .replace("→", " to ").replace("->", " to ").replace("_", " ")
+                .replaceAll("\\s+", " ").trim();
+        if (normalized.startsWith("sm terminal") && normalized.contains("grand terminal")) {
+            return com.premier.trip.model.TripDirection.SM_TO_GRAND;
+        }
+        if (normalized.startsWith("grand terminal") && normalized.contains("sm terminal")) {
+            return com.premier.trip.model.TripDirection.GRAND_TO_SM;
+        }
+        return null;
+    }
+
+    private String plateFor(StaffCashTransaction tx) {
+        String snapshot = normalizePlate(tx.getVehiclePlateNumber());
+        return snapshot != null ? snapshot : tx.getVehicle() == null ? null : normalizePlate(tx.getVehicle().getPlateNumber());
     }
 
     private LocalDateTime parseTimestamp(String value) {

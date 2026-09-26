@@ -49,8 +49,8 @@ class PaymentErrorContractTest {
     }
     @Test void paymentConflictsAndOutagesKeepSafeStatusAndCode() throws Exception {
         var fares = mock(FarePaymentService.class);
-        var controller = new RfidController(mock(DriverShiftRepository.class), fares, mock(VehicleRepository.class),
-                mock(DeviceService.class), mock(DriverLocationRepository.class), mock(RfidUidCaptureService.class), mock(RealtimeEventPublisher.class),
+        var controller = new RfidController(fares, mock(VehicleRepository.class),
+                mock(DeviceService.class), mock(RfidUidCaptureService.class), mock(RealtimeEventPublisher.class),
                 mock(com.premier.device.service.GpsTelemetryService.class));
         var mvc = MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new GlobalExceptionHandler()).build();
         when(fares.processQrPayment(any(DeviceFareRequest.class), isNull()))

@@ -29,7 +29,8 @@ class GpsDeviceRegressionTest {
     @Autowired PlatformTransactionManager transactions;
     private DevicePrincipal terminal() {
         String id=UUID.randomUUID().toString(); String plate=id.substring(0,8).toUpperCase();
-        var vehicle=vehicles.saveAndFlush(Vehicle.builder().plateNumber(plate).totalCapacity(50).build());
+        var vehicle=vehicles.saveAndFlush(Vehicle.builder().plateNumber(plate).totalCapacity(50)
+                .status(VehicleStatus.ACTIVE).build());
         return DevicePrincipal.from(devices.saveAndFlush(Device.builder().deviceId(id).deviceName("Synthetic GPS terminal")
                 .vehicleId(vehicle.getId()).plateNumber(plate).deviceType(DeviceType.VEHICLE_TERMINAL).tokenHash(encoder.encode(id)).build()));
     }
@@ -42,6 +43,7 @@ class GpsDeviceRegressionTest {
         var device=terminal(); Instant captured=Instant.now().minusSeconds(4);
         assertThat(gps.receive(device,fix(device,captured)).get("status")).isEqualTo("GPS_VALID");
         var original=locations.findTopByPlateNumberOrderByRecordedAtDesc(device.plateNumber()).orElseThrow();
+        assertThat(original.getShiftId()).isNull();
         assertThat(original.getCapturedAt()).isCloseTo(captured,org.assertj.core.api.Assertions.within(1,java.time.temporal.ChronoUnit.MILLIS));
         assertThat(original.getReceivedAt()).isAfter(original.getCapturedAt());
         assertThat(gps.receive(device,fix(device,Instant.now().minusSeconds(60))).get("status")).isEqualTo("GPS_STALE");
@@ -49,6 +51,8 @@ class GpsDeviceRegressionTest {
         assertThat(gps.receive(device,missing).get("status")).isEqualTo("GPS_NO_FIX");
         assertThat(locations.findTopByPlateNumberOrderByRecordedAtDesc(device.plateNumber()).orElseThrow().getId()).isEqualTo(original.getId());
         assertThat(observations.findTop100ByDeviceIdOrderByReceivedAtDesc(device.deviceId())).hasSize(3);
+        assertThat(observations.findTop100ByDeviceIdOrderByReceivedAtDesc(device.deviceId()))
+                .allSatisfy(row -> assertThat(row.getShiftId()).isNull());
     }
     @Test void invalidNumbersQualityFutureTimeAndJumpCannotCorruptHistory() {
         var device=terminal(); gps.receive(device,fix(device,Instant.now().minusSeconds(3)));

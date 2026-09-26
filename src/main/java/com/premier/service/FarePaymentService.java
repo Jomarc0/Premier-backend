@@ -1,9 +1,5 @@
 package com.premier.service;
 
-import com.premier.driver.model.DriverShift;
-import com.premier.driver.model.ShiftStatus;
-import com.premier.driver.repository.DriverShiftRepository;
-import com.premier.driver.repository.VehicleRepository;
 import com.premier.device.security.DevicePrincipal;
 import com.premier.device.service.DeviceService;
 import com.premier.model.*;
@@ -31,9 +27,7 @@ import java.time.LocalDateTime;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Base64;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @RequiredArgsConstructor
@@ -45,19 +39,9 @@ public class FarePaymentService {
     private static final String QR_PREFIX = "PREMIER-FARE:";
     private static final String MOBILE_NFC_PREFIX = "PREMIER-NFC:";
 
-    private static final double SM_LIPA_LAT = 13.954781;
-    private static final double SM_LIPA_LNG = 121.163096;
-    private static final double SM_BATANGAS_LAT = 13.7567;
-    private static final double SM_BATANGAS_LNG = 121.0584;
-    private static final double GPS_RADIUS_KM = 5.0;
-    private static final int GPS_TIMEOUT_MINUTES = 5;
-
     private final PassengerRepository passengerRepository;
     private final TransactionRepository transactionRepository;
     private final FareQrTokenRepository fareQrTokenRepository;
-    private final DriverShiftRepository driverShiftRepository;
-    private final VehicleRepository vehicleRepository;
-    private final FirebaseService firebaseService;
     private final DeviceService deviceService;
     private final FarePaymentAttemptService farePaymentAttemptService;
     private final StaffCashFareService staffCashFareService;
@@ -65,7 +49,6 @@ public class FarePaymentService {
     private final com.premier.payment.service.PaymentIdentity paymentIdentity;
     private final com.premier.payment.service.PaymentFailureRecorder paymentFailureRecorder;
     private final com.premier.payment.service.PaymentNotificationService paymentNotifications;
-    private final com.premier.trip.service.VehicleTripService tripService;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -139,47 +122,6 @@ public class FarePaymentService {
                         .expiresAt(expiresAt)
                         .expiresInSeconds(qrExpirationSeconds)
                         .build());
-    }
-
-    @Transactional
-    public ApiResponse<FarePaymentResponse> processQrPayment(String payload, String plateNumber) {
-        try {
-            String rawToken = normalizeQrPayload(payload);
-            FareQrToken token = lockedToken(sha256(rawToken))
-                    .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_QR", "Invalid QR fare token."));
-            requirePurpose(token, "QR");
-
-            if (token.getStatus() == FareQrTokenStatus.USED) {
-                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "QR authorization has already been used.");
-            }
-
-            if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
-                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "QR_EXPIRED", "QR fare token expired. Please generate a new one.");
-            }
-
-            if (token.getExpiresAt().isBefore(nowManila())) {
-                token.setStatus(FareQrTokenStatus.EXPIRED);
-                fareQrTokenRepository.save(token);
-                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "QR_EXPIRED", "QR fare token expired. Please generate a new one.");
-            }
-
-            ApiResponse<FarePaymentResponse> response = processPassengerFare(
-                    token.getPassenger().getId(),
-                    null,
-                    "QR",
-                    plateNumber,
-                    false);
-
-            token.setStatus(FareQrTokenStatus.USED);
-            token.setUsedAt(LocalDateTime.now());
-            token.setUsedReferenceNumber(response.getData().getReferenceNumber());
-            fareQrTokenRepository.save(token);
-
-            return response;
-        } catch (RuntimeException ex) {
-            recordPaymentFailure(PaymentMethod.QR, null, null, plateNumber, null, null, ex);
-            throw ex;
-        }
     }
 
     @Transactional
@@ -265,47 +207,6 @@ public class FarePaymentService {
     }
 
     @Transactional
-    public ApiResponse<FarePaymentResponse> processMobileNfcTokenPayment(String payload, String plateNumber) {
-        try {
-            String rawToken = normalizeMobileNfcPayload(payload);
-            FareQrToken token = lockedToken(sha256(rawToken))
-                    .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_NFC", "Invalid mobile NFC fare token."));
-            requirePurpose(token, "NFC");
-
-            if (token.getStatus() == FareQrTokenStatus.USED) {
-                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "NFC authorization has already been used.");
-            }
-
-            if (token.getStatus() == FareQrTokenStatus.EXPIRED) {
-                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "NFC_EXPIRED", "Mobile NFC token expired. Please generate a new one.");
-            }
-
-            if (token.getExpiresAt().isBefore(nowManila())) {
-                token.setStatus(FareQrTokenStatus.EXPIRED);
-                fareQrTokenRepository.save(token);
-                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "NFC_EXPIRED", "Mobile NFC token expired. Please generate a new one.");
-            }
-
-            ApiResponse<FarePaymentResponse> response = processPassengerFare(
-                    token.getPassenger().getId(),
-                    null,
-                    "NFC",
-                    plateNumber,
-                    true);
-
-            token.setStatus(FareQrTokenStatus.USED);
-            token.setUsedAt(LocalDateTime.now());
-            token.setUsedReferenceNumber(response.getData().getReferenceNumber());
-            fareQrTokenRepository.save(token);
-
-            return response;
-        } catch (RuntimeException ex) {
-            recordPaymentFailure(PaymentMethod.NFC, null, null, plateNumber, null, null, ex);
-            throw ex;
-        }
-    }
-
-    @Transactional
     public ApiResponse<FarePaymentResponse> processMobileNfcTokenPayment(DeviceFareRequest request,
                                                                          DevicePrincipal device) {
         try {
@@ -367,24 +268,6 @@ public class FarePaymentService {
     }
 
     @Transactional
-    public ApiResponse<FarePaymentResponse> processRfidPayment(String rfidUid, String plateNumber) {
-        try {
-            if (rfidUid == null || rfidUid.trim().isEmpty()) {
-                throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "RFID UID is required.");
-            }
-
-            String normalizedUid = rfidUid.trim().toUpperCase();
-            Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
-                    .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RFID", "Card not recognized. Please register your card."));
-
-            return processPassengerFare(passenger.getId(), normalizedUid, "RFID", plateNumber, true);
-        } catch (RuntimeException ex) {
-            recordPaymentFailure(PaymentMethod.RFID, null, rfidUid, plateNumber, null, null, ex);
-            throw ex;
-        }
-    }
-
-    @Transactional
     public ApiResponse<FarePaymentResponse> processRfidPayment(DeviceFareRequest request,
                                                                DevicePrincipal device) {
         try {
@@ -411,16 +294,6 @@ public class FarePaymentService {
                     request != null ? request.getPlateNumber() : null, device != null ? device.deviceId() : null, request, ex);
             throw ex;
         }
-    }
-
-    private ApiResponse<FarePaymentResponse> processPassengerFare(
-            Long passengerId,
-            String rfidUid,
-            String source,
-            String plateNumber,
-            boolean useCooldown) {
-        return processPassengerFare(passengerId, rfidUid, source, plateNumber, useCooldown,
-                null, null, null);
     }
 
     private ApiResponse<FarePaymentResponse> processPassengerFare(
@@ -467,19 +340,12 @@ public class FarePaymentService {
 
         String normalizedPlate = normalizePlate(plateNumber);
         LocalDateTime capturedAt = request == null ? null : com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
-        DriverShift activeShift = capturedAt == null ? activeShiftForPlate(normalizedPlate)
-                : driverShiftRepository.findTopByVehiclePlateNumberAndShiftStartLessThanEqualOrderByShiftStartDesc(normalizedPlate, capturedAt)
-                    .filter(shift -> shift.getShiftEnd() == null || !capturedAt.isAfter(shift.getShiftEnd())).orElse(null);
-        com.premier.driver.model.Vehicle vehicle = resolveVehicle(device, normalizedPlate, activeShift);
-        // A driver app is optional for terminal payments. Attach the trip when
-        // one covers the capture time, while retaining the authenticated
-        // device and vehicle association when no trip has been started.
-        com.premier.trip.model.VehicleTrip trip = device == null ? null
-                : tripService.findForFare(vehicle == null ? null : vehicle.getId(), capturedAt).orElse(null);
-        if (trip != null) {
-            vehicle = trip.getVehicle();
-            activeShift = trip.getDriverShift();
-        }
+        com.premier.driver.model.Vehicle vehicle = deviceService.requireAssignedVehicle(device);
+        normalizedPlate = normalizePlate(vehicle.getPlateNumber());
+        String route = clean(vehicle.getRoute());
+        com.premier.trip.model.TripDirection direction = directionFor(route);
+        String origin = direction == null ? originTerminal(route) : direction.origin();
+        String destination = direction == null ? destinationTerminal(route) : direction.destination();
         paymentPerf(source, "vehicle_context_complete", performanceStarted);
         String refNumber = source + "-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         LocalDateTime now = LocalDateTime.now();
@@ -500,13 +366,10 @@ public class FarePaymentService {
                 .paymentMethod(paymentMethod(source))
                 .vehicle(vehicle)
                 .vehiclePlateNumber(normalizedPlate)
-                .trip(trip)
-                .tripDirection(trip == null ? null : trip.getDirection())
-                .originTerminal(trip == null ? null : trip.getOriginTerminal())
-                .destinationTerminal(trip == null ? null : trip.getDestinationTerminal())
-                .driverShift(activeShift)
-                .routeSnapshot(trip != null ? trip.getDirection().routeLabel()
-                        : activeShift != null && activeShift.getVehicle() != null ? activeShift.getVehicle().getRoute() : null)
+                .tripDirection(direction)
+                .originTerminal(origin)
+                .destinationTerminal(destination)
+                .routeSnapshot(route)
                 .requestNonce(request != null ? clean(request.getRequestNonce()) : null)
                 .requestTimestamp(request != null ? parseRequestTimestamp(request.getRequestTimestamp()) : null)
                 .description(source + " Fare Payment" + (normalizedPlate != null ? " | " + normalizedPlate : ""))
@@ -544,26 +407,30 @@ public class FarePaymentService {
         return ApiResponse.success("Fare deducted successfully!", data);
     }
 
-    private DriverShift activeShiftForPlate(String plateNumber) {
-        if (plateNumber == null) {
-            return null;
+    private com.premier.trip.model.TripDirection directionFor(String route) {
+        if (route == null) return null;
+        String normalized = route.toLowerCase().replace("sm lipa", "sm terminal")
+                .replace("→", " to ").replace("->", " to ").replace("_", " ")
+                .replaceAll("\\s+", " ").trim();
+        if (normalized.startsWith("sm terminal") && normalized.contains("grand terminal")) {
+            return com.premier.trip.model.TripDirection.SM_TO_GRAND;
         }
-        return driverShiftRepository.findByVehiclePlateNumberAndStatus(plateNumber, ShiftStatus.ACTIVE)
-                .orElse(null);
+        if (normalized.startsWith("grand terminal") && normalized.contains("sm terminal")) {
+            return com.premier.trip.model.TripDirection.GRAND_TO_SM;
+        }
+        return null;
     }
 
-    private com.premier.driver.model.Vehicle resolveVehicle(DevicePrincipal device, String plateNumber,
-                                                              DriverShift activeShift) {
-        if (activeShift != null && activeShift.getVehicle() != null) {
-            return activeShift.getVehicle();
-        }
-        if (device != null && device.vehicleId() != null) {
-            return vehicleRepository.findById(device.vehicleId())
-                    .filter(vehicle -> plateNumber != null
-                            && plateNumber.equalsIgnoreCase(vehicle.getPlateNumber()))
-                    .orElse(null);
-        }
-        return plateNumber == null ? null : vehicleRepository.findByPlateNumber(plateNumber).orElse(null);
+    private String originTerminal(String route) {
+        if (route == null) return null;
+        int separator = route.toLowerCase().indexOf(" to ");
+        return separator < 0 ? null : route.substring(0, separator).trim();
+    }
+
+    private String destinationTerminal(String route) {
+        if (route == null) return null;
+        int separator = route.toLowerCase().indexOf(" to ");
+        return separator < 0 ? null : route.substring(separator + 4).trim();
     }
 
     private PaymentMethod paymentMethod(String source) {
@@ -775,40 +642,6 @@ public class FarePaymentService {
         }
     }
 
-    private String determineDropOffLocation(DriverShift shift) {
-        Double lat = shift.getCurrentLatitude();
-        Double lng = shift.getCurrentLongitude();
-        LocalDateTime lastUpdate = shift.getLastLocationUpdate();
-
-        if (lat == null || lng == null || lastUpdate == null ||
-                lastUpdate.isBefore(LocalDateTime.now().minusMinutes(GPS_TIMEOUT_MINUTES))) {
-            return "SM Lipa / SM Batangas";
-        }
-
-        double distLipa = calculateDistance(lat, lng, SM_LIPA_LAT, SM_LIPA_LNG);
-        double distBatangas = calculateDistance(lat, lng, SM_BATANGAS_LAT, SM_BATANGAS_LNG);
-
-        if (distLipa < GPS_RADIUS_KM) {
-            return "SM Batangas";
-        }
-
-        if (distBatangas < GPS_RADIUS_KM) {
-            return "SM Lipa";
-        }
-
-        return "SM Lipa / SM Batangas";
-    }
-
-    private double calculateDistance(double lat1, double lng1, double lat2, double lng2) {
-        final int radiusKm = 6371;
-        double latDistance = Math.toRadians(lat2 - lat1);
-        double lngDistance = Math.toRadians(lng2 - lng1);
-        double a = Math.sin(latDistance / 2) * Math.sin(latDistance / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(lngDistance / 2) * Math.sin(lngDistance / 2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return radiusKm * c;
-    }
 }
 
 

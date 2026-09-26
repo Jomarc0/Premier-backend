@@ -39,8 +39,7 @@ class FareVehicleAssociationRegressionTest {
     @Autowired DeviceRepository devices;
     @Autowired com.premier.admin.service.AdminService adminService;
     @Autowired com.premier.driver.repository.DriverRepository drivers;
-    @Autowired com.premier.driver.repository.DriverShiftRepository shifts;
-    @Autowired com.premier.trip.repository.VehicleTripRepository trips;
+    @Autowired com.premier.driver.repository.DriverAssignmentRepository assignments;
 
     @Test
     void rfidFareStoresAuthenticatedVehicleAndPlateSnapshot() {
@@ -98,6 +97,26 @@ class FareVehicleAssociationRegressionTest {
     }
 
     @Test
+    void inactiveAssignedDriverDoesNotBlockQrPayment() {
+        Fixture fixture = fixture("DRV-0001");
+        var driver = drivers.saveAndFlush(com.premier.driver.model.Driver.builder()
+                .fullName("Peter Santos").licenseNumber("DL-" + UUID.randomUUID())
+                .phoneNumber("09000000000").status(com.premier.driver.model.DriverStatus.ACTIVE).build());
+        assignments.saveAndFlush(com.premier.driver.model.DriverAssignment.builder()
+                .driver(driver).vehicle(fixture.vehicle())
+                .status(com.premier.driver.model.AssignmentStatus.ACTIVE).build());
+        driver.setStatus(com.premier.driver.model.DriverStatus.INACTIVE);
+        drivers.saveAndFlush(driver);
+
+        DeviceFareRequest request = request(fixture.plate());
+        request.setPayload(fares.generateQrToken(fixture.passenger()).getData().getPayload());
+
+        var payment = fares.processQrPayment(request, fixture.device()).getData();
+
+        assertFare(payment.getReferenceNumber(), fixture);
+    }
+
+    @Test
     void nonFareAndUnassociatedHistoricalFareExposeNoBusPlate() {
         Transaction topUp = Transaction.builder()
                 .type(TransactionType.TOPUP).status(TransactionStatus.SUCCESS)
@@ -117,7 +136,8 @@ class FareVehicleAssociationRegressionTest {
         assertThat(transaction.getPaymentMethod()).isNotNull();
         assertThat(transaction.getVehicle().getId()).isEqualTo(fixture.vehicle().getId());
         assertThat(transaction.getVehiclePlateNumber()).isEqualTo(fixture.plate());
-        assertThat(transaction.getTrip()).isNotNull();
+        assertThat(transaction.getDriverShift()).isNull();
+        assertThat(transaction.getTrip()).isNull();
         assertThat(transaction.getTripDirection()).isEqualTo(com.premier.trip.model.TripDirection.SM_TO_GRAND);
         TransactionResponse response = TransactionResponse.from(transaction);
         assertThat(response.getPlateNumber()).isEqualTo(fixture.plate());
@@ -128,8 +148,9 @@ class FareVehicleAssociationRegressionTest {
         String suffix = UUID.randomUUID().toString();
         Vehicle vehicle = vehicles.saveAndFlush(Vehicle.builder()
                 .plateNumber(plate)
+                .route("SM Terminal to Grand Terminal")
+                .status(com.premier.driver.model.VehicleStatus.ACTIVE)
                 .totalCapacity(50).build());
-        TripTestFixture.activeTrip(plate, vehicles, drivers, shifts, trips);
         Passenger passenger = passengers.saveAndFlush(Passenger.builder()
                 .cardNumber("card-" + suffix).rfidUid("uid-" + suffix)
                 .status(PassengerStatus.ACTIVE).is2FaEnabled(true)

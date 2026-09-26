@@ -10,7 +10,8 @@ import java.time.LocalDateTime;
 @Table(name = "topup_requests",
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_topup_reference_number", columnNames = "reference_number"),
-                @UniqueConstraint(name = "uk_topup_paymongo_link_id", columnNames = "paymongo_link_id")
+                @UniqueConstraint(name = "uk_topup_paymongo_link_id", columnNames = "paymongo_link_id"),
+                @UniqueConstraint(name = "uk_topup_idempotency_key", columnNames = "idempotency_key")
         })
 @Data
 @NoArgsConstructor
@@ -36,6 +37,12 @@ public class TopUpRequest {
 
     @Column(name = "reference_number")
     private String referenceNumber;
+
+    @Column(name = "idempotency_key", nullable = false, length = 120, updatable = false)
+    private String idempotencyKey;
+
+    @Column(name = "payment_method", nullable = false, length = 20, updatable = false)
+    private String paymentMethod;
 
 @Enumerated(EnumType.STRING)
     @Column(length = 50) 

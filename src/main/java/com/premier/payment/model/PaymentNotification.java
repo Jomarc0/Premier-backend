@@ -13,4 +13,5 @@ public class PaymentNotification {
     @Column(nullable = false) private int attempts;
     @Column(nullable = false) private Instant dueAt = Instant.now();
     @Column(nullable = false, updatable = false) private Instant createdAt = Instant.now();
+    @Column(name = "read_at") private Instant readAt;
 }

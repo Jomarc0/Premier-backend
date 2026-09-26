@@ -35,14 +35,19 @@ class FareIntegrityRegressionTest {
     @Autowired com.premier.admin.service.AdminService adminService;
     @Autowired com.premier.admin.repository.AdminRepository admins;
     @Autowired com.premier.payment.repository.PaymentNotificationRepository notifications;
+    @Autowired com.premier.payment.service.PaymentNotificationService notificationHistory;
     @Autowired com.premier.driver.repository.VehicleRepository vehicles;
-    @Autowired com.premier.driver.repository.DriverRepository drivers;
-    @Autowired com.premier.driver.repository.DriverShiftRepository shifts;
-    @Autowired com.premier.trip.repository.VehicleTripRepository trips;
 
     @BeforeEach
-    void ensureActiveTrip() {
-        TripTestFixture.activeTrip("TEST-01", vehicles, drivers, shifts, trips);
+    void ensureActiveVehicle() {
+        var vehicle = vehicles.findByPlateNumber("TEST-01").orElseGet(() ->
+                com.premier.driver.model.Vehicle.builder()
+                        .plateNumber("TEST-01")
+                        .totalCapacity(50)
+                        .build());
+        vehicle.setStatus(com.premier.driver.model.VehicleStatus.ACTIVE);
+        vehicle.setRoute("SM Terminal to Grand Terminal");
+        vehicles.saveAndFlush(vehicle);
     }
 
     Passenger passenger(String balance) {
@@ -88,7 +93,9 @@ class FareIntegrityRegressionTest {
         var passenger = passenger("200.00");
         passenger.setRfidUid(UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase());
         passenger = passengers.saveAndFlush(passenger);
-        var payment = fares.processRfidPayment(passenger.getRfidUid(), "TEST-01").getData();
+        var terminalRequest = request(null, UUID.randomUUID().toString());
+        terminalRequest.setRfidUid(passenger.getRfidUid());
+        var payment = fares.processRfidPayment(terminalRequest, device()).getData();
         Long passengerId = passenger.getId();
 
         var passengerNotifications = notifications.findAll().stream()
@@ -102,6 +109,16 @@ class FareIntegrityRegressionTest {
             assertThat(notification.getReference()).isEqualTo(payment.getReferenceNumber());
             assertThat(notification.getStatus()).isEqualTo("PENDING");
         });
+        var history = notificationHistory.history(passenger, 0, 20).getData();
+        assertThat(history.getContent()).singleElement().satisfies(notification -> {
+            assertThat(notification.getType()).isEqualTo("FARE");
+            assertThat(notification.getReference()).isEqualTo(payment.getReferenceNumber());
+            assertThat(notification.isRead()).isFalse();
+        });
+        var otherPassenger = passenger("200.00");
+        assertThat(notificationHistory.history(otherPassenger, 0, 20).getData().getContent()).isEmpty();
+        notificationHistory.markRead(passenger, history.getContent().get(0).getId());
+        assertThat(notificationHistory.history(passenger, 0, 20).getData().getUnreadCount()).isZero();
     }
     @ParameterizedTest @ValueSource(ints = {2, 10, 100})
     void oneQrAllowsOnlyOneFareAcrossTerminals(int count) throws Exception {

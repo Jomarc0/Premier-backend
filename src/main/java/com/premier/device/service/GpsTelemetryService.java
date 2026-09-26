@@ -7,25 +7,24 @@ import com.premier.driver.model.*;
 import com.premier.driver.repository.*;
 import com.premier.realtime.RealtimeEventPublisher;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.*;
 import java.util.*;
-@Service @RequiredArgsConstructor
+@Service @RequiredArgsConstructor @Slf4j
 public class GpsTelemetryService {
     private final DeviceService authentication;
     private final DeviceRepository devices;
     private final DriverLocationRepository locations;
-    private final DriverShiftRepository shifts;
     private final GpsObservationRepository observations;
     private final RealtimeEventPublisher events;
-    private final VehicleRepository vehicles;
+    private final com.premier.staffqueue.service.BusQueueService busQueueService;
     @Transactional
     public Map<String, Object> receive(DevicePrincipal principal, GpsTelemetryRequest fix) {
         authentication.lockPaymentDevice(principal);
         authentication.requirePlateAssignment(principal, fix.getPlateNumber());
-        vehicles.findLockedByPlate(fix.getPlateNumber().trim().toUpperCase(Locale.ROOT)).orElseThrow(() ->
-                new com.premier.exception.ClientException(org.springframework.http.HttpStatus.NOT_FOUND, "NOT_FOUND", "Vehicle not found."));
+        Vehicle vehicle = authentication.requireAssignedVehicle(principal);
         authentication.validateFreshNonce(principal, fix.getRequestNonce(), fix.getRequestTimestamp());
         Device device = devices.findById(principal.id()).orElseThrow();
         Instant now = Instant.now(); String status = "GPS_VALID", reason = "ACCEPTED";
@@ -38,7 +37,7 @@ public class GpsTelemetryService {
                 || fix.getHdop() == null || !Double.isFinite(fix.getHdop()) || fix.getHdop() <= 0 || fix.getHdop() > 5) {
             status = "GPS_INVALID"; reason = "LOW_QUALITY";
         }
-        String plate = fix.getPlateNumber().trim().toUpperCase(Locale.ROOT);
+        String plate = vehicle.getPlateNumber().trim().toUpperCase(Locale.ROOT);
         var previous = locations.findTopByPlateNumberOrderByRecordedAtDesc(plate);
         if ("GPS_VALID".equals(status) && previous.isPresent() && previous.get().getCapturedAt() != null) {
             var prior = previous.get(); long elapsed = Duration.between(prior.getCapturedAt(), fix.getCapturedAt()).toMillis();
@@ -46,9 +45,8 @@ public class GpsTelemetryService {
             else if (distanceKm(prior.getLatitude(), prior.getLongitude(), fix.getLatitude(), fix.getLongitude())
                     > 0.2 + elapsed * 0.00005) { status = "GPS_INVALID"; reason = "IMPOSSIBLE_JUMP"; }
         }
-        var shift = shifts.findByVehiclePlateNumberAndStatus(plate, ShiftStatus.ACTIVE);
         GpsObservation observation = new GpsObservation(); observation.setDeviceId(principal.deviceId());
-        observation.setPlateNumber(plate); observation.setShiftId(shift.map(DriverShift::getId).orElse(null));
+        observation.setPlateNumber(plate); observation.setShiftId(null);
         observation.setCapturedAt(fix.getCapturedAt()); observation.setReceivedAt(now); observation.setStatus(status); observation.setReason(reason);
         observation.setLatitude(finiteOrNull(fix.getLatitude())); observation.setLongitude(finiteOrNull(fix.getLongitude()));
         observation.setSatellites(fix.getSatellites()); observation.setHdop(finiteOrNull(fix.getHdop())); observation.setFixType(fix.getFixType());
@@ -56,14 +54,22 @@ public class GpsTelemetryService {
         if ("GPS_VALID".equals(status)) {
             LocalDateTime captured = LocalDateTime.ofInstant(fix.getCapturedAt(), ZoneId.of("Asia/Manila"));
             device.setGpsCapturedAt(fix.getCapturedAt());
-            locations.save(DriverLocation.builder().plateNumber(plate).shiftId(shift.map(DriverShift::getId).orElse(null))
+            locations.save(DriverLocation.builder().plateNumber(plate).shiftId(null)
                     .latitude(fix.getLatitude()).longitude(fix.getLongitude()).recordedAt(captured)
                     .capturedAt(fix.getCapturedAt()).receivedAt(now).deviceId(principal.deviceId())
                     .satellites(fix.getSatellites()).hdop(fix.getHdop()).fixType(fix.getFixType())
                     .speed(fix.getSpeed()).heading(fix.getHeading()).build());
-            shift.ifPresent(s -> { s.setCurrentLatitude(fix.getLatitude()); s.setCurrentLongitude(fix.getLongitude()); s.setLastLocationUpdate(captured); shifts.save(s); });
         }
         devices.save(device);
+        if ("GPS_VALID".equals(status)) {
+            try {
+                busQueueService.checkInFromGps(vehicle.getId(), fix.getLatitude(), fix.getLongitude());
+            } catch (RuntimeException queueFailure) {
+                // Queue persistence must not make otherwise-valid GPS ingestion unavailable.
+                log.warn("Terminal queue GPS check-in failed vehicle={} type={}",
+                        vehicle.getId(), queueFailure.getClass().getSimpleName());
+            }
+        }
         events.admin("VEHICLE_LOCATION_UPDATED", "VEHICLE_LOCATION", observation.getId());
         events.staff("VEHICLE_LOCATION_UPDATED", "VEHICLE_LOCATION", observation.getId());
         return Map.of("status", status, "reason", reason, "receivedAt", now);

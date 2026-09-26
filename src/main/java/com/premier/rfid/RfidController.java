@@ -1,11 +1,6 @@
 package com.premier.rfid;
 
-import com.premier.driver.model.DriverLocation;
-import com.premier.driver.model.DriverShift;
-import com.premier.driver.model.ShiftStatus;
 import com.premier.driver.model.VehicleStatus;
-import com.premier.driver.repository.DriverLocationRepository;
-import com.premier.driver.repository.DriverShiftRepository;
 import com.premier.driver.repository.VehicleRepository;
 import com.premier.device.security.DeviceContext;
 import com.premier.device.service.DeviceService;
@@ -26,11 +21,9 @@ import java.util.Map;
 @Slf4j
 public class RfidController {
 
-    private final DriverShiftRepository driverShiftRepository;
     private final FarePaymentService farePaymentService;
     private final VehicleRepository vehicleRepository;
     private final DeviceService deviceService;
-    private final DriverLocationRepository driverLocationRepository;
     private final RfidUidCaptureService rfidUidCaptureService;
     private final RealtimeEventPublisher realtimeEventPublisher;
     private final com.premier.device.service.GpsTelemetryService gpsTelemetry;

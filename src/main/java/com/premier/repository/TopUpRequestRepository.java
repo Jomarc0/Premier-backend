@@ -28,6 +28,8 @@ public interface TopUpRequestRepository
     Optional<TopUpRequest> findByReferenceNumberAndPassengerId(
         String referenceNumber, Long passengerId);
 
+    Optional<TopUpRequest> findByIdempotencyKey(String idempotencyKey);
+
     //verifyPayment
     Optional<TopUpRequest> findByPaymongoLinkId(
         String linkId);

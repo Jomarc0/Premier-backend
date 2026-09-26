@@ -20,9 +20,10 @@ class PaymentNotificationRegressionTest {
     private final PaymentNotificationRepository notices = mock(PaymentNotificationRepository.class);
     private final PassengerRepository passengers = mock(PassengerRepository.class);
     private final PassengerFcmTokenRepository tokens = mock(PassengerFcmTokenRepository.class);
+    private final TransactionRepository ledger = mock(TransactionRepository.class);
     private final PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
     private final PaymentPushSender push = mock(PaymentPushSender.class);
-    private final PaymentNotificationService service = new PaymentNotificationService(notices, passengers, tokens, transactions, push);
+    private final PaymentNotificationService service = new PaymentNotificationService(notices, passengers, tokens, ledger, transactions, push);
     private PaymentNotification notice;
 
     @BeforeEach void setup() {

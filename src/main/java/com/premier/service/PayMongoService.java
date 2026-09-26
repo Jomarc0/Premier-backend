@@ -63,18 +63,37 @@ public class PayMongoService {
         BigDecimal amount = com.premier.payment.service.Money.exact(dto.getAmount());
         if (amount.compareTo(new BigDecimal("20.00")) < 0 || amount.compareTo(new BigDecimal("10000.00")) > 0)
             throw client(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_AMOUNT", "Top-up must be between 20.00 and 10000.00.");
+        String paymentMethod = normalizePaymentMethod(dto.getPaymentMethod());
+        String idempotencyKey = normalizeIdempotencyKey(dto.getIdempotencyKey());
+        log.info("[RECHARGE] Attempt: {}", idempotencyKey);
+
+        var existing = topUpRequestRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            log.info("[RECHARGE] Existing payment returned attempt={}", idempotencyKey);
+            return existingAttempt(existing.get(), principal, amount, paymentMethod);
+        }
+
         String reference = "PMR-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        Long id = tx().execute(status -> {
-            Passenger passenger = passengerRepository.findLockedById(principal.getId()).orElseThrow(PayMongoService::notFound);
-            if (passenger.getStatus() != PassengerStatus.ACTIVE)
-                throw client(HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "Account is inactive.");
-            TopUpRequest request = new TopUpRequest();
-            request.setPassenger(passenger); request.setAmount(amount); request.setReferenceNumber(reference);
-            request.setStatus(TransactionStatus.PROCESSING);
-            return topUpRequestRepository.saveAndFlush(request).getId();
-        });
+        Long id;
+        try {
+            id = tx().execute(status -> {
+                Passenger passenger = passengerRepository.findLockedById(principal.getId()).orElseThrow(PayMongoService::notFound);
+                if (passenger.getStatus() != PassengerStatus.ACTIVE)
+                    throw client(HttpStatus.FORBIDDEN, "ACCOUNT_INACTIVE", "Account is inactive.");
+                TopUpRequest request = new TopUpRequest();
+                request.setPassenger(passenger); request.setAmount(amount); request.setReferenceNumber(reference);
+                request.setIdempotencyKey(idempotencyKey); request.setPaymentMethod(paymentMethod);
+                request.setStatus(TransactionStatus.PROCESSING);
+                return topUpRequestRepository.saveAndFlush(request).getId();
+            });
+        } catch (org.springframework.dao.DataIntegrityViolationException ex) {
+            var concurrent = topUpRequestRepository.findByIdempotencyKey(idempotencyKey).orElseThrow(() -> ex);
+            log.info("[RECHARGE] Duplicate request blocked attempt={}", idempotencyKey);
+            return existingAttempt(concurrent, principal, amount, paymentMethod);
+        }
+        log.info("[RECHARGE] Creating payment attempt={}", idempotencyKey);
         Map<String, Object> attributes = Map.of("amount", amount.movePointRight(2).longValueExact(), "currency", "PHP",
-                "description", "Premier Transit Top-Up via " + normalizePaymentMethod(dto.getPaymentMethod()) + " - " + reference,
+                "description", "Premier Transit Top-Up via " + paymentMethod + " - " + reference,
                 "remarks", reference);
         JsonNode resource;
         try {
@@ -127,6 +146,47 @@ public class PayMongoService {
             case "MAYA" -> "MAYA";
             default -> "GCASH";
         };
+    }
+
+    private String normalizeIdempotencyKey(String value) {
+        if (value == null) throw client(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", "Payment attempt ID is required.");
+        String key = value.trim().toLowerCase(Locale.ROOT);
+        try {
+            UUID.fromString(key);
+        } catch (IllegalArgumentException ex) {
+            throw client(HttpStatus.BAD_REQUEST, "INVALID_IDEMPOTENCY_KEY", "Payment attempt ID must be a UUID.");
+        }
+        return key;
+    }
+
+    private ApiResponse<TopUpResponse> existingAttempt(
+            TopUpRequest request, Passenger principal, BigDecimal amount, String paymentMethod) {
+        if (!Objects.equals(request.getPassenger().getId(), principal.getId())
+                || request.getAmount().compareTo(amount) != 0
+                || !Objects.equals(request.getPaymentMethod(), paymentMethod)) {
+            throw client(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
+                    "This payment attempt ID belongs to different top-up details.");
+        }
+
+        TopUpResponse data = TopUpResponse.builder()
+                .topUpId(request.getId())
+                .amount(request.getAmount())
+                .checkoutUrl(request.getPaymongoCheckoutUrl())
+                .referenceNumber(request.getReferenceNumber())
+                .status(request.getStatus().name())
+                .expiresAt(request.getExpiresAt())
+                .build();
+        if (request.getPaymongoCheckoutUrl() != null
+                && (request.getStatus() == TransactionStatus.PENDING || request.getStatus() == TransactionStatus.SUCCESS)) {
+            return ApiResponse.success("Existing payment attempt returned.", data);
+        }
+
+        String code = request.getLastSafeError() == null ? "PAYMENT_PROCESSING" : request.getLastSafeError();
+        ApiResponse<TopUpResponse> result = ApiResponse.error(
+                "This payment attempt already exists and is being processed. Retry this same attempt for its result.", data);
+        result.setCode(code);
+        result.setReference(request.getReferenceNumber());
+        return result;
     }
 
     //WEBHOOK HANDLER 
