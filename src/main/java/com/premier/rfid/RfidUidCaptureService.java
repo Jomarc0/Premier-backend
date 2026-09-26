@@ -2,202 +2,206 @@ package com.premier.rfid;
 
 import com.premier.device.security.DevicePrincipal;
 import com.premier.response.ApiResponse;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.net.InetAddress;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
+@RequiredArgsConstructor
 @Slf4j
 public class RfidUidCaptureService {
+    static final long CAPTURE_TIMEOUT_SECONDS = 90;
+    private static final long FINISHED_RETENTION_SECONDS = 86400;
+    private static final String WAITING = "WAITING";
+    private static final String CAPTURED = "CAPTURED";
+    private static final String EXPIRED = "EXPIRED";
+    private static final String BACKEND_INSTANCE = resolveBackendInstance();
 
-    static final long CAPTURE_TIMEOUT_SECONDS = 30;
-    private static final long COMPLETED_RETENTION_SECONDS = 30;
-    private final Map<String, CaptureSession> sessions = new ConcurrentHashMap<>();
-    private long nextSequence;
+    private final RfidUidCaptureSessionRepository sessions;
 
-    public synchronized ApiResponse<Map<String, Object>> startCapture() {
+    @Transactional
+    public ApiResponse<Map<String, Object>> startCapture() {
         return startCapture(null);
     }
 
-    public synchronized ApiResponse<Map<String, Object>> startCapture(String requestedDeviceId) {
-        expireOldSessions();
+    @Transactional
+    public ApiResponse<Map<String, Object>> startCapture(String requestedDeviceId) {
+        Instant now = Instant.now();
+        expireAndClean(now);
         String deviceId = requestedDeviceId == null || requestedDeviceId.isBlank()
                 ? null : requestedDeviceId.trim();
+
         if (deviceId != null) {
-            CaptureSession existing = sessions.values().stream()
-                    .filter(session -> "WAITING".equals(session.status) && deviceId.equals(session.deviceId))
-                    .min(Comparator.comparingLong(session -> session.sequence))
-                    .orElse(null);
-            if (existing != null) {
-                return startResponse(existing, "RFID UID capture is already waiting for this device.");
+            var existing = sessions.findFirstByDeviceIdAndStatusOrderByCreatedAtAsc(deviceId, WAITING);
+            if (existing.isPresent()) {
+                logSession("START REUSED", existing.get(), now);
+                return startResponse(existing.get(), "RFID UID capture is already waiting for this device.");
             }
         }
-        if (sessions.size() >= 100) throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, "CAPTURE_CAPACITY", "Too many active capture requests.");
-        String requestId = UUID.randomUUID().toString();
-        CaptureSession session = new CaptureSession(requestId, nextSequence++);
-        session.deviceId = deviceId;
-        sessions.put(requestId, session);
-        log.info("[RFID CAPTURE] Started captureId={} device={}", requestId,
-                deviceId == null ? "unassigned" : deviceId);
+
+        RfidUidCaptureSession session = new RfidUidCaptureSession();
+        session.setRequestId(UUID.randomUUID().toString());
+        session.setDeviceId(deviceId);
+        session.setStatus(WAITING);
+        session.setCreatedAt(now);
+        session.setExpiresAt(now.plusSeconds(CAPTURE_TIMEOUT_SECONDS));
+        sessions.saveAndFlush(session);
+        logSession("START", session, now);
         return startResponse(session, "Tap a blank RFID card on the reader.");
     }
 
-    private ApiResponse<Map<String, Object>> startResponse(CaptureSession session, String message) {
-        return ApiResponse.success(message,
-                dataMap(
-                        "requestId", session.requestId,
-                        "status", session.status,
-                        "expiresAt", session.expiresAt.toString()));
-    }
-
-    public synchronized ApiResponse<Map<String, Object>> status(String requestId) {
-        expireOldSessions();
-        CaptureSession session = sessions.get(requestId);
+    @Transactional
+    public ApiResponse<Map<String, Object>> status(String requestId) {
+        Instant now = Instant.now();
+        expireAndClean(now);
+        RfidUidCaptureSession session = sessions.findById(requestId).orElse(null);
         if (session == null) {
-            log.info("[RFID CAPTURE] Expired captureId={}", requestId);
-            return ApiResponse.success("RFID UID capture expired.",
-                    dataMap("status", "EXPIRED"));
+            logMissing("STATUS NOT FOUND", requestId, now);
+            return response(true, "RFID_CAPTURE_NOT_FOUND", "RFID UID capture is no longer available.",
+                    dataMap("requestId", requestId, "status", EXPIRED, "backendInstance", BACKEND_INSTANCE));
         }
-
-        log.info("[RFID CAPTURE] {} captureId={}", session.status, requestId);
-        return ApiResponse.success(messageFor(session),
-                dataMap(
-                        "requestId", session.requestId,
-                        "status", session.status,
-                        "rfidUid", session.rfidUid == null ? "" : session.rfidUid,
-                        "deviceId", session.deviceId == null ? "" : session.deviceId,
-                        "expiresAt", session.expiresAt.toString()));
+        logSession("STATUS", session, now);
+        return response(true, "RFID_CAPTURE_" + session.getStatus(), messageFor(session), sessionData(session, now));
     }
 
-    public synchronized ApiResponse<Map<String, Object>> nextForDevice(DevicePrincipal device) {
-        expireOldSessions();
-        if (device == null) {
-            throw new SecurityException("Authenticated device identity is required.");
-        }
+    @Transactional
+    public ApiResponse<Map<String, Object>> nextForDevice(DevicePrincipal device) {
+        if (device == null) throw new SecurityException("Authenticated device identity is required.");
+        Instant now = Instant.now();
+        expireAndClean(now);
 
-        CaptureSession assigned = sessions.values().stream()
-                .filter(session -> "WAITING".equals(session.status)
-                        && device.deviceId().equals(session.deviceId))
-                .min(Comparator.comparingLong(session -> session.sequence))
-                .orElse(null);
-
-        if (assigned == null) {
-            assigned = sessions.values().stream()
-                    .filter(session -> "WAITING".equals(session.status) && session.deviceId == null)
-                    .min(Comparator.comparingLong(session -> session.sequence))
-                    .orElse(null);
-            if (assigned != null) {
-                assigned.deviceId = device.deviceId();
-                log.info("[RFID CAPTURE] Waiting captureId={} device={}", assigned.requestId, assigned.deviceId);
+        RfidUidCaptureSession session = sessions
+                .findFirstByDeviceIdAndStatusOrderByCreatedAtAsc(device.deviceId(), WAITING).orElse(null);
+        if (session == null) {
+            session = sessions.findFirstByDeviceIdIsNullAndStatusOrderByCreatedAtAsc(WAITING).orElse(null);
+            if (session != null) {
+                session.setDeviceId(device.deviceId());
+                sessions.saveAndFlush(session);
             }
         }
 
-        if (assigned != null) {
-            return ApiResponse.success("RFID UID capture requested.",
-                    dataMap(
-                            "active", true,
-                            "requestId", assigned.requestId,
-                            "expiresInMs", Math.max(0, Duration.between(Instant.now(), assigned.expiresAt).toMillis()),
-                            "message", "Tap RFID card to register"));
+        if (session == null) {
+            return response(true, "RFID_CAPTURE_IDLE", "No RFID UID capture requested.",
+                    dataMap("active", false, "backendInstance", BACKEND_INSTANCE));
         }
 
-        return ApiResponse.success("No RFID UID capture requested.", dataMap("active", false));
+        logSession("DEVICE CLAIM", session, now);
+        Map<String, Object> data = sessionData(session, now);
+        data.put("active", true);
+        data.put("expiresInMs", remainingMillis(session, now));
+        data.put("message", "Tap RFID card to register");
+        return response(true, "RFID_CAPTURE_WAITING", "RFID UID capture requested.", data);
     }
 
-    public synchronized ApiResponse<Map<String, Object>> submitFromDevice(String requestId, String uid, DevicePrincipal device) {
-        expireOldSessions();
-        CaptureSession session = sessions.get(requestId);
-        if (session == null || session.isExpired()) {
-            return ApiResponse.error("RFID UID capture expired.");
-        }
-
-        if (device == null || !device.deviceId().equals(session.deviceId) || !"WAITING".equals(session.status)) {
-            throw new SecurityException("Capture session is not assigned to this device.");
-        }
+    @Transactional
+    public ApiResponse<Map<String, Object>> submitFromDevice(String requestId, String uid, DevicePrincipal device) {
+        Instant now = Instant.now();
         String normalizedUid = normalizeUid(uid);
-        if (!normalizedUid.matches("(?:[A-F0-9]{8}|[A-F0-9]{14}|[A-F0-9]{20})")) {
-            return ApiResponse.error("Invalid RFID UID.");
+        RfidUidCaptureSession session = sessions.findLockedByRequestId(requestId).orElse(null);
+        if (session == null) {
+            logMissing("UID SUBMISSION NOT FOUND", requestId, now);
+            return response(false, "RFID_CAPTURE_NOT_FOUND", "RFID UID capture session was not found.",
+                    dataMap("requestId", requestId, "backendInstance", BACKEND_INSTANCE, "now", now.toString()));
         }
 
-        session.status = "CAPTURED";
-        session.rfidUid = normalizedUid;
-        session.deviceId = device != null ? device.deviceId() : null;
-        session.capturedAt = Instant.now();
-        log.info("[RFID CAPTURE] UID submitted captureId={} device={} uid={}", requestId, device.deviceId(), normalizedUid);
-        log.info("[RFID CAPTURE] Completed captureId={} device={}", requestId, device.deviceId());
+        boolean active = WAITING.equals(session.getStatus()) && now.isBefore(session.getExpiresAt());
+        logSession("UID SUBMISSION active=" + active, session, now);
+        if (!active) {
+            if (WAITING.equals(session.getStatus())) {
+                session.setStatus(EXPIRED);
+                sessions.saveAndFlush(session);
+            }
+            return response(false, "RFID_CAPTURE_EXPIRED", "RFID UID capture expired.", sessionData(session, now));
+        }
+        if (device == null || !device.deviceId().equals(session.getDeviceId())) {
+            return response(false, "RFID_CAPTURE_DEVICE_MISMATCH",
+                    "RFID UID capture belongs to another device.", sessionData(session, now));
+        }
+        if (!normalizedUid.matches("(?:[A-F0-9]{8}|[A-F0-9]{14}|[A-F0-9]{20})")) {
+            return response(false, "INVALID_RFID_UID", "Invalid RFID UID.", sessionData(session, now));
+        }
 
-        return ApiResponse.success("RFID UID captured.",
-                dataMap(
-                        "requestId", session.requestId,
-                        "status", session.status,
-                        "rfidUid", session.rfidUid));
+        session.setStatus(CAPTURED);
+        session.setRfidUid(normalizedUid);
+        session.setCapturedAt(now);
+        sessions.saveAndFlush(session);
+        logSession("COMPLETED uid=" + normalizedUid, session, now);
+        return response(true, "RFID_CAPTURED", "RFID UID captured.", sessionData(session, now));
+    }
+
+    private ApiResponse<Map<String, Object>> startResponse(RfidUidCaptureSession session, String message) {
+        return response(true, "RFID_CAPTURE_WAITING", message, sessionData(session, Instant.now()));
+    }
+
+    private void expireAndClean(Instant now) {
+        int expired = sessions.expireWaiting(now);
+        int deleted = sessions.deleteOldFinished(now.minusSeconds(FINISHED_RETENTION_SECONDS));
+        if (expired > 0 || deleted > 0) {
+            log.info("[RFID CAPTURE SESSION] CLEANUP expired={} deleted={} now={} backend={}",
+                    expired, deleted, now, BACKEND_INSTANCE);
+        }
+    }
+
+    private Map<String, Object> sessionData(RfidUidCaptureSession session, Instant now) {
+        return dataMap("requestId", session.getRequestId(), "status", session.getStatus(),
+                "rfidUid", session.getRfidUid() == null ? "" : session.getRfidUid(),
+                "deviceId", session.getDeviceId() == null ? "" : session.getDeviceId(),
+                "createdAt", session.getCreatedAt().toString(), "expiresAt", session.getExpiresAt().toString(),
+                "now", now.toString(), "remainingMs", remainingMillis(session, now),
+                "backendInstance", BACKEND_INSTANCE);
+    }
+
+    private long remainingMillis(RfidUidCaptureSession session, Instant now) {
+        return Math.max(0, Duration.between(now, session.getExpiresAt()).toMillis());
+    }
+
+    private void logSession(String event, RfidUidCaptureSession session, Instant now) {
+        log.info("[RFID CAPTURE SESSION] {} sessionId={} device={} status={} createdAt={} expiresAt={} now={} remaining={}ms active={} backend={}",
+                event, session.getRequestId(), session.getDeviceId(), session.getStatus(), session.getCreatedAt(),
+                session.getExpiresAt(), now, remainingMillis(session, now),
+                WAITING.equals(session.getStatus()) && now.isBefore(session.getExpiresAt()), BACKEND_INSTANCE);
+    }
+
+    private void logMissing(String event, String requestId, Instant now) {
+        log.warn("[RFID CAPTURE SESSION] {} sessionId={} now={} backend={}", event, requestId, now, BACKEND_INSTANCE);
+    }
+
+    private ApiResponse<Map<String, Object>> response(boolean success, String code, String message, Map<String, Object> data) {
+        return ApiResponse.<Map<String, Object>>builder().success(success).code(code).message(message).data(data).build();
     }
 
     private String normalizeUid(String uid) {
         if (uid == null) return "";
-        return uid.trim()
-                .toUpperCase()
-                .replace("UID", "")
-                .replace(":", "")
-                .replace(" ", "")
-                .replaceAll("[^A-F0-9]", "");
+        return uid.trim().toUpperCase().replace("UID", "").replace(":", "")
+                .replace(" ", "").replaceAll("[^A-F0-9]", "");
     }
 
     private Map<String, Object> dataMap(Object... values) {
         Map<String, Object> data = new HashMap<>();
-        for (int i = 0; i + 1 < values.length; i += 2) {
-            data.put(String.valueOf(values[i]), values[i + 1]);
-        }
+        for (int i = 0; i + 1 < values.length; i += 2) data.put(String.valueOf(values[i]), values[i + 1]);
         return data;
     }
 
-    private void expireOldSessions() {
-        sessions.values().removeIf(session -> {
-            boolean expired = session.shouldRemove();
-            if (expired) log.info("[RFID CAPTURE] Expired captureId={} device={}", session.requestId,
-                    session.deviceId == null ? "unassigned" : session.deviceId);
-            return expired;
-        });
+    private String messageFor(RfidUidCaptureSession session) {
+        if (CAPTURED.equals(session.getStatus())) return "RFID UID captured.";
+        if (EXPIRED.equals(session.getStatus())) return "RFID UID capture expired.";
+        return "Waiting for RFID card tap.";
     }
 
-    private String messageFor(CaptureSession session) {
-        return "CAPTURED".equals(session.status)
-                ? "RFID UID captured."
-                : "Waiting for RFID card tap.";
-    }
-
-    private static class CaptureSession {
-        private final String requestId;
-        private final long sequence;
-        private final Instant createdAt;
-        private final Instant expiresAt;
-        private String status = "WAITING";
-        private String rfidUid;
-        private String deviceId;
-        private Instant capturedAt;
-
-        private CaptureSession(String requestId, long sequence) {
-            this.requestId = requestId;
-            this.sequence = sequence;
-            this.createdAt = Instant.now();
-            this.expiresAt = createdAt.plusSeconds(CAPTURE_TIMEOUT_SECONDS);
-        }
-
-        private boolean isExpired() {
-            return "WAITING".equals(status) && Instant.now().isAfter(expiresAt);
-        }
-
-        private boolean shouldRemove() {
-            if (isExpired()) return true;
-            return "CAPTURED".equals(status) && capturedAt != null
-                    && Instant.now().isAfter(capturedAt.plusSeconds(COMPLETED_RETENTION_SECONDS));
-        }
+    private static String resolveBackendInstance() {
+        String render = System.getenv("RENDER_INSTANCE_ID");
+        if (render != null && !render.isBlank()) return render;
+        String hostname = System.getenv("HOSTNAME");
+        if (hostname != null && !hostname.isBlank()) return hostname;
+        try { return InetAddress.getLocalHost().getHostName(); }
+        catch (Exception ignored) { return "local"; }
     }
 }
