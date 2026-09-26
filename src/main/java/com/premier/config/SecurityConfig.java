@@ -127,7 +127,7 @@ public class SecurityConfig {
                 .requestMatchers(
                     "/api/rfid/registration/uid-request",
                     "/api/rfid/registration/uid-capture")
-                    .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL", "DEVICE_GPS_TRACKER")
+                    .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
 
                 .requestMatchers("/api/staff/**")
                     .hasAnyAuthority("STAFF", "ADMIN", "SUPER_ADMIN")

@@ -126,8 +126,9 @@ public class DeviceService {
         }
         Vehicle vehicle = vehicleRepository.findById(principal.vehicleId())
                 .orElseThrow(() -> new SecurityException("Assigned vehicle not found."));
-        if (vehicle.getStatus() != com.premier.driver.model.VehicleStatus.ACTIVE) {
-            throw new SecurityException("Assigned vehicle is not active.");
+        if (vehicle.getStatus() == com.premier.driver.model.VehicleStatus.MAINTENANCE
+                || vehicle.getStatus() == com.premier.driver.model.VehicleStatus.OUT_OF_SERVICE) {
+            throw new SecurityException("Assigned vehicle is unavailable for service.");
         }
         if (!java.util.Objects.equals(normalizePlate(vehicle.getPlateNumber()), normalizePlate(principal.plateNumber()))) {
             throw new SecurityException("Device vehicle assignment is inconsistent.");

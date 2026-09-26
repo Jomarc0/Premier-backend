@@ -16,7 +16,7 @@ public class RfidUidRegistrationService {
         var existing=registrations.findById(uid);
         if(existing.isPresent()) {
             if(!existing.get().getOwnerType().equals(type)||!existing.get().getOwnerId().equals(owner))
-                throw new ClientException(HttpStatus.CONFLICT,"UID_RESERVED","This RFID UID is already assigned or retired.");
+                throw new ClientException(HttpStatus.CONFLICT,"UID_RESERVED","This RFID card is already registered.");
             return;
         }
         // One primary key spans passenger and cash cards; concurrent claims cannot both commit.

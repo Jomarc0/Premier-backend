@@ -117,6 +117,19 @@ class FareVehicleAssociationRegressionTest {
     }
 
     @Test
+    void inactiveAssignedVehicleDoesNotBlockTerminalPayment() {
+        Fixture fixture = fixture("IDLE-0001");
+        fixture.vehicle().setStatus(com.premier.driver.model.VehicleStatus.INACTIVE);
+        vehicles.saveAndFlush(fixture.vehicle());
+        DeviceFareRequest request = request(fixture.plate());
+        request.setPayload(fares.generateQrToken(fixture.passenger()).getData().getPayload());
+
+        var payment = fares.processQrPayment(request, fixture.device()).getData();
+
+        assertFare(payment.getReferenceNumber(), fixture);
+    }
+
+    @Test
     void nonFareAndUnassociatedHistoricalFareExposeNoBusPlate() {
         Transaction topUp = Transaction.builder()
                 .type(TransactionType.TOPUP).status(TransactionStatus.SUCCESS)

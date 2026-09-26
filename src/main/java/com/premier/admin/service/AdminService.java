@@ -480,7 +480,7 @@ public class AdminService {
         PassengerCardCategory cardCategory = parseCardCategory(category);
 
         if (passengerRepository.existsByRfidUid(normalizedUid))
-            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "RFID UID already registered.");
+            throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "CONFLICT", "This RFID card is already registered.");
 
         String cardNumber = generateUniqueCardNumber();
 

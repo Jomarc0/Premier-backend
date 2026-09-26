@@ -260,9 +260,13 @@ public class AdminController {
     }
 
     @PostMapping("/rfid/uid-capture/start")
-    public ResponseEntity<?> startRfidUidCapture(HttpServletRequest request) {
+    public ResponseEntity<?> startRfidUidCapture(
+            HttpServletRequest request,
+            @RequestBody(required = false) Map<String, Object> body) {
         getCurrentAdmin(request);
-        return ResponseEntity.ok(rfidUidCaptureService.startCapture());
+        String deviceId = body == null || body.get("deviceId") == null
+                ? null : body.get("deviceId").toString();
+        return ResponseEntity.ok(rfidUidCaptureService.startCapture(deviceId));
     }
 
     @GetMapping("/rfid/uid-capture/{requestId}")
