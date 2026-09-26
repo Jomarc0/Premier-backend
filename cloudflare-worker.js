@@ -55,12 +55,20 @@ export default {
 };
 
 async function proxyHttp(request, url, origin) {
-  const startIndex = counter++ % BACKENDS.length;
+  // UID capture sessions currently live in one Spring process. Keep every
+  // request in that short workflow on the primary backend so start, device
+  // polling, submission, and admin polling all observe the same session.
+  const captureRoute = url.pathname === '/api/admin/rfid/uid-capture/start'
+    || url.pathname.startsWith('/api/admin/rfid/uid-capture/')
+    || url.pathname === '/api/rfid/registration/uid-request'
+    || url.pathname === '/api/rfid/registration/uid-capture';
+  const candidateBackends = captureRoute ? [BACKENDS[0]] : BACKENDS;
+  const startIndex = captureRoute ? 0 : counter++ % candidateBackends.length;
   const safeToRetry = ['GET', 'HEAD'].includes(request.method);
   let lastError;
 
-  for (let offset = 0; offset < BACKENDS.length; offset += 1) {
-    const backend = BACKENDS[(startIndex + offset) % BACKENDS.length];
+  for (let offset = 0; offset < candidateBackends.length; offset += 1) {
+    const backend = candidateBackends[(startIndex + offset) % candidateBackends.length];
     try {
       const response = await fetch(`${backend}${url.pathname}${url.search}`, {
         method: request.method,
