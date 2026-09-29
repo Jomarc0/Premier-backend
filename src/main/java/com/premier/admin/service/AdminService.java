@@ -513,7 +513,9 @@ public class AdminService {
 
         return ApiResponse.success("RFID card created successfully. Passenger can set up an authenticator using the card number.",
                 CardIssuanceResponse.builder()
-                        .passengerId(saved.getId()).cardNumber(saved.getCardNumber()).status(saved.getStatus()).build());
+                        .passengerId(saved.getId()).cardNumber(saved.getCardNumber())
+                        .rfidUid(saved.getRfidUid()).cardCategory(saved.getCardCategory())
+                        .status(saved.getStatus()).createdAt(saved.getCreatedAt()).build());
     }
 
     /** An operator correction adds a linked ledger entry; the original fare is never edited. */
