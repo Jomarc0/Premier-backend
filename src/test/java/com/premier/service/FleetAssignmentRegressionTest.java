@@ -60,4 +60,17 @@ class FleetAssignmentRegressionTest {
         assertThat(assignments.findById(assigned.id()).orElseThrow().getStatus()).isEqualTo(AssignmentStatus.COMPLETED);
         assertThat(shifts.findById(shift.getId()).orElseThrow().getStatus()).isEqualTo(ShiftStatus.ACTIVE);
     }
+    @Test void operationalStatusesDoNotBlockFleetAssignment() {
+        var admin=admin();
+        var driver=drivers.saveAndFlush(Driver.builder().fullName("Inactive Driver")
+                .licenseNumber(UUID.randomUUID().toString()).phoneNumber("synthetic")
+                .status(DriverStatus.OFF_DUTY).build());
+        var vehicle=vehicles.saveAndFlush(Vehicle.builder().plateNumber(UUID.randomUUID().toString())
+                .totalCapacity(20).status(VehicleStatus.MAINTENANCE).build());
+
+        var assigned=fleet.assign(admin,driver.getId(),vehicle.getId()).getData();
+
+        assertThat(assigned.driverId()).isEqualTo(driver.getId());
+        assertThat(assigned.vehicleId()).isEqualTo(vehicle.getId());
+    }
 }

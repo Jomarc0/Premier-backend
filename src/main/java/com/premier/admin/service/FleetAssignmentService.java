@@ -36,9 +36,6 @@ public class FleetAssignmentService {
                 .orElseThrow(() -> new ClientException(HttpStatus.NOT_FOUND, "DRIVER_NOT_FOUND", "Driver not found."));
         Vehicle vehicle = vehicleRepository.findLockedById(vehicleId)
                 .orElseThrow(() -> new ClientException(HttpStatus.NOT_FOUND, "VEHICLE_NOT_FOUND", "Vehicle not found."));
-        if (driver.getStatus() != DriverStatus.ACTIVE || vehicle.getStatus() != VehicleStatus.ACTIVE)
-            throw conflict("Only an active driver and vehicle may be assigned.");
-
         assignmentRepository.findByDriverIdAndStatus(driverId, AssignmentStatus.ACTIVE)
                 .filter(row -> !row.getVehicle().getId().equals(vehicleId))
                 .ifPresent(row -> { throw conflict("Unassign this driver before reassignment."); });
