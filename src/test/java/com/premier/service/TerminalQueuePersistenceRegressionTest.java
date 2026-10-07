@@ -27,8 +27,8 @@ import static org.assertj.core.api.Assertions.*;
 @SpringBootTest
 @ActiveProfiles("test")
 class TerminalQueuePersistenceRegressionTest {
-    private static final double GRAND_LAT = 13.790391;
-    private static final double GRAND_LNG = 121.062721;
+    private static final double GRAND_LAT = 13.78962;
+    private static final double GRAND_LNG = 121.06170;
     private static final double SM_LAT = 13.954781;
     private static final double SM_LNG = 121.163096;
 

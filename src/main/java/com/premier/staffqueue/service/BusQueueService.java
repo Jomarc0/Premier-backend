@@ -40,9 +40,9 @@ public class BusQueueService {
     private double smTerminalLatitude;
     @org.springframework.beans.factory.annotation.Value("${premier.terminals.sm.longitude:121.163096}")
     private double smTerminalLongitude;
-    @org.springframework.beans.factory.annotation.Value("${premier.terminals.grand.latitude:13.790391}")
+    @org.springframework.beans.factory.annotation.Value("${premier.terminals.grand.latitude:13.78962}")
     private double grandTerminalLatitude;
-    @org.springframework.beans.factory.annotation.Value("${premier.terminals.grand.longitude:121.062721}")
+    @org.springframework.beans.factory.annotation.Value("${premier.terminals.grand.longitude:121.06170}")
     private double grandTerminalLongitude;
 
     @Transactional(readOnly = true)

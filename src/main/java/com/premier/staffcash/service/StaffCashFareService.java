@@ -16,7 +16,7 @@ import com.premier.staffcash.repository.StaffCashTransactionRepository;
 import com.premier.staffcash.request.RegisterStaffCashCardRequest;
 import com.premier.staffcash.response.*;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
+import static com.premier.config.FarePolicy.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,12 +35,6 @@ public class StaffCashFareService {
     private final PassengerRepository passengerRepository;
     private final DeviceService deviceService;
     private final com.premier.payment.service.PaymentIdentity paymentIdentity;
-
-    @Value("${fare.fixed-amount:60.00}")
-    private BigDecimal regularFare;
-
-    @Value("${fare.discount-rate:0.20}")
-    private BigDecimal discountRate;
 
     public boolean isStaffCashCard(String uid) {
         return findCard(uid).isPresent();
@@ -88,9 +82,9 @@ public class StaffCashFareService {
         LocalDateTime offlineCapturedAt = com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
 
         BigDecimal discount = card.getPurpose() == StaffCashCardPurpose.DISCOUNTED_CASH
-                ? regularFare.multiply(discountRate)
+                ? REGULAR_FARE.subtract(DISCOUNTED_FARE)
                 : BigDecimal.ZERO;
-        BigDecimal finalFare = regularFare.subtract(discount);
+        BigDecimal finalFare = REGULAR_FARE.subtract(discount);
         String route = clean(vehicle.getRoute());
         com.premier.trip.model.TripDirection direction = directionFor(route);
         String origin = direction == null ? originTerminal(route) : direction.origin();
@@ -103,7 +97,7 @@ public class StaffCashFareService {
                 .vehiclePlateNumber(plate)
                 .deviceId(device.deviceId())
                 .fareCategory(card.getPurpose())
-                .baseFare(regularFare)
+                .baseFare(REGULAR_FARE)
                 .discountAmount(discount)
                 .finalFare(finalFare)
                 .referenceNumber("CASH-" + UUID.randomUUID().toString().replace("-", "").toUpperCase())

@@ -41,9 +41,9 @@ public class AdminVehicleMonitoringController {
     private double pointALatitude;
     @Value("${premier.terminals.sm.longitude:121.163096}")
     private double pointALongitude;
-    @Value("${premier.terminals.grand.latitude:13.790391}")
+    @Value("${premier.terminals.grand.latitude:13.78962}")
     private double pointBLatitude;
-    @Value("${premier.terminals.grand.longitude:121.062721}")
+    @Value("${premier.terminals.grand.longitude:121.06170}")
     private double pointBLongitude;
 
     @GetMapping("/buses")

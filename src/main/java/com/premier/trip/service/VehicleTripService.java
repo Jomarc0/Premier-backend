@@ -27,8 +27,8 @@ public class VehicleTripService {
 
     @Value("${premier.terminals.sm.latitude:13.954781}") private double smLatitude;
     @Value("${premier.terminals.sm.longitude:121.163096}") private double smLongitude;
-    @Value("${premier.terminals.grand.latitude:13.790391}") private double grandLatitude;
-    @Value("${premier.terminals.grand.longitude:121.062721}") private double grandLongitude;
+    @Value("${premier.terminals.grand.latitude:13.78962}") private double grandLatitude;
+    @Value("${premier.terminals.grand.longitude:121.06170}") private double grandLongitude;
     @Value("${premier.trips.terminal-radius-km:0.5}") private double terminalRadiusKm;
     @Value("${premier.trips.location-max-age-seconds:120}") private long locationMaxAgeSeconds;
 

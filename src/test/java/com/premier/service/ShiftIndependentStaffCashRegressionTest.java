@@ -58,12 +58,20 @@ class ShiftIndependentStaffCashRegressionTest {
     @Autowired DriverShiftRepository shifts;
     @Autowired VehicleTripRepository trips;
 
-    @Test
-    void staffCashSucceedsWithoutDriverShiftOrTripAndAdminReportLoads() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"REGULAR_CASH,75.00", "DISCOUNTED_CASH,60.00"})
+    void staffCashSucceedsWithoutDriverShiftOrTripAndAdminReportLoads(StaffCashCardPurpose purpose, String fare) {
         Fixture fixture = fixture();
+        fixture.card().setPurpose(purpose);
+        cards.saveAndFlush(fixture.card());
         DeviceFareRequest request = request(fixture);
 
         var response = fares.process(request, fixture.device()).getData();
+        assertThat(response.getBaseFare()).isEqualByComparingTo("75.00");
+        assertThat(response.getDeductedFare()).isEqualByComparingTo(fare);
+        assertThat(fares.process(request, fixture.device()).getData()).usingRecursiveComparison().isEqualTo(response);
+        assertThat(transactions.findAll().stream()
+                .filter(row -> response.getReferenceNumber().equals(row.getReferenceNumber())).count()).isEqualTo(1);
         StaffCashTransaction stored = transactions.findAll().stream()
                 .filter(row -> response.getReferenceNumber().equals(row.getReferenceNumber()))
                 .findFirst().orElseThrow();
@@ -105,6 +113,7 @@ class ShiftIndependentStaffCashRegressionTest {
         assertThat(report.transactions()).anySatisfy(row -> {
             assertThat(row.referenceNumber()).isEqualTo(historical.getReferenceNumber());
             assertThat(row.driverShiftId()).isEqualTo(shift.getId());
+            assertThat(row.finalFare()).isEqualByComparingTo("60.00");
         });
     }
 

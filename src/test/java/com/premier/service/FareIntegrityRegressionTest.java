@@ -50,6 +50,102 @@ class FareIntegrityRegressionTest {
         vehicles.saveAndFlush(vehicle);
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(PassengerCardCategory.class)
+    void newCardsAndEntityDefaultsReceive150OnlyOnce(PassengerCardCategory category) {
+        String suffix = UUID.randomUUID().toString();
+        var admin = admins.saveAndFlush(com.premier.admin.model.Admin.builder()
+                .adminId(suffix.substring(0, 18)).username(suffix).fullName("Issuance test")
+                .password("unused").is2FaEnabled(true).build());
+        var existing = passenger("37.25");
+        var card = adminService.createPassenger(admin, suffix.replace("-", "").substring(0, 14), category.name()).getData();
+        var created = passengers.findById(card.getPassengerId()).orElseThrow();
+        assertThat(created.getBalance()).isEqualByComparingTo("150.00");
+        assertThat(created.getDiscountEligible()).isEqualTo(category != PassengerCardCategory.REGULAR);
+        assertThat(new Passenger().getBalance()).isEqualByComparingTo("150.00");
+        assertThat(Passenger.builder().cardCategory(category).build().getBalance()).isEqualByComparingTo("150.00");
+        var opening = transactions.findByPassengerIdOrderByCreatedAtDesc(created.getId(),
+                org.springframework.data.domain.PageRequest.of(0, 10)).getContent();
+        assertThat(opening).singleElement().satisfies(tx -> {
+            assertThat(tx.getAmount()).isEqualByComparingTo("150.00");
+            assertThat(tx.getBalanceAfter()).isEqualByComparingTo("150.00");
+        });
+        existing.setFcmToken("updated-profile");
+        passengers.saveAndFlush(existing);
+        assertThat(passengers.findById(existing.getId()).orElseThrow().getBalance()).isEqualByComparingTo("37.25");
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "REGULAR,true,75.00,75.00", "STUDENT,true,60.00,90.00",
+            "SENIOR_CITIZEN,true,60.00,90.00", "PWD,true,60.00,90.00",
+            "STUDENT,false,75.00,75.00"})
+    void officialFareForEveryCategoryAndPaymentMethod(PassengerCardCategory category,
+            boolean eligible, String amount, String remaining) {
+        for (String method : List.of("QR", "NFC", "RFID")) {
+            var passenger = passenger("150.00");
+            passenger.setCardCategory(category); passenger.setDiscountEligible(eligible);
+            passenger.setRfidUid(UUID.randomUUID().toString().replace("-", "").toUpperCase());
+            passenger = passengers.saveAndFlush(passenger);
+            var terminal = device();
+            var req = request(null, UUID.randomUUID().toString());
+            java.util.function.Supplier<FarePaymentResponse> pay;
+            if (method.equals("RFID")) {
+                req.setRfidUid(passenger.getRfidUid());
+                pay = () -> fares.processRfidPayment(req, terminal).getData();
+            } else if (method.equals("NFC")) {
+                req.setPayload(fares.generateMobileNfcToken(passenger).getData().getToken());
+                pay = () -> fares.processMobileNfcTokenPayment(req, terminal).getData();
+            } else {
+                req.setPayload(fares.generateQrToken(passenger).getData().getPayload());
+                pay = () -> fares.processQrPayment(req, terminal).getData();
+            }
+            var result = pay.get();
+            assertThat(result.getBaseFare()).isEqualByComparingTo("75.00");
+            assertThat(result.getDeductedFare()).isEqualByComparingTo(amount);
+            assertThat(result.getRemainingBalance()).isEqualByComparingTo(remaining);
+            assertThat(pay.get()).usingRecursiveComparison().isEqualTo(result);
+            assertThat(ledgerCount(passenger)).isEqualTo(1);
+        }
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"REGULAR,74.99", "STUDENT,59.99"})
+    void oneCentBelowRequiredFareIsRejected(PassengerCardCategory category, String balance) {
+        var passenger = passenger(balance);
+        passenger.setCardCategory(category); passenger.setDiscountEligible(true);
+        passenger = passengers.saveAndFlush(passenger);
+        var req = request(fares.generateQrToken(passenger).getData().getPayload(), UUID.randomUUID().toString());
+        var terminal = device();
+        assertThatThrownBy(() -> fares.processQrPayment(req, terminal))
+                .isInstanceOf(ClientException.class).extracting("code").isEqualTo("INSUFFICIENT_BALANCE");
+        assertThat(ledgerCount(passenger)).isZero();
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo(balance);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"60.00", "48.00"})
+    void historicalQrStatusKeepsRecordedAmount(String oldFare) {
+        var passenger = passenger("120.00");
+        String payload = fares.generateQrToken(passenger).getData().getPayload();
+        String reference = "LEGACY-" + UUID.randomUUID();
+        var historical = transactions.saveAndFlush(Transaction.builder().passenger(passenger)
+                .type(TransactionType.FARE_DEDUCTION).status(TransactionStatus.SUCCESS)
+                .amount(new BigDecimal(oldFare)).balanceBefore(new BigDecimal("180.00"))
+                .balanceAfter(new BigDecimal("180.00").subtract(new BigDecimal(oldFare)))
+                .referenceNumber(reference).build());
+        new TransactionTemplate(manager).executeWithoutResult(status -> {
+            var token = tokens.findByPassengerIdAndStatus(passenger.getId(), FareQrTokenStatus.ACTIVE).get(0);
+            token.setStatus(FareQrTokenStatus.USED); token.setUsedReferenceNumber(reference);
+            tokens.save(token);
+        });
+        var payment = fares.getQrTokenStatus(passenger, payload).getData().getPayment();
+        assertThat(payment.getDeductedFare()).isEqualByComparingTo(oldFare);
+        assertThat(payment.getBaseFare()).isNull();
+        assertThat(transactions.findById(historical.getId()).orElseThrow().getAmount()).isEqualByComparingTo(oldFare);
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("120.00");
+    }
+
     Passenger passenger(String balance) {
         String id = UUID.randomUUID().toString();
         return passengers.saveAndFlush(Passenger.builder().cardNumber("test-" + id).rfidUid(id)
@@ -103,7 +199,7 @@ class FareIntegrityRegressionTest {
                 .toList();
 
         assertThat(payment.getSource()).isEqualTo("RFID");
-        assertThat(payment.getRemainingBalance()).isEqualByComparingTo("140.00");
+        assertThat(payment.getRemainingBalance()).isEqualByComparingTo("125.00");
         assertThat(passengerNotifications).singleElement().satisfies(notification -> {
             assertThat(notification.getKind()).isEqualTo("FARE");
             assertThat(notification.getReference()).isEqualTo(payment.getReferenceNumber());
@@ -129,7 +225,7 @@ class FareIntegrityRegressionTest {
         var result = race(count, i -> fares.processQrPayment(request(payload, UUID.randomUUID().toString()), terminals.get(i)).getData());
         assertThat(result.stream().filter(FarePaymentResponse.class::isInstance).count()).isEqualTo(1);
         assertThat(result.stream().filter(ClientException.class::isInstance).count()).isEqualTo(count - 1);
-        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("5940.00");
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("5925.00");
         assertThat(ledgerCount(passenger)).isEqualTo(1);
         assertThat(notifications.findAll().stream().filter(n -> n.getPassengerId().equals(passenger.getId())).count()).isEqualTo(1);
     }
@@ -142,7 +238,7 @@ class FareIntegrityRegressionTest {
         var first = (FarePaymentResponse) results.get(0);
         assertThat(results).allSatisfy(value -> assertThat(value).usingRecursiveComparison().isEqualTo(first));
         assertThat(results).extracting(value -> ((FarePaymentResponse)value).getReferenceNumber()).containsOnly(first.getReferenceNumber());
-        assertThat(results).extracting(value -> ((FarePaymentResponse)value).getRemainingBalance()).allMatch(value -> ((BigDecimal)value).compareTo(new BigDecimal("140.00")) == 0);
+        assertThat(results).extracting(value -> ((FarePaymentResponse)value).getRemainingBalance()).allMatch(value -> ((BigDecimal)value).compareTo(new BigDecimal("125.00")) == 0);
         assertThat(ledgerCount(passenger)).isEqualTo(1);
         var retry = request(payload, key); retry.setRequestTimestamp(Instant.now().minusSeconds(900).toString());
         assertThat(fares.processQrPayment(retry, terminal).getData().getReferenceNumber()).isEqualTo(first.getReferenceNumber());
@@ -186,7 +282,7 @@ class FareIntegrityRegressionTest {
         fares.processQrPayment(request(fares.generateQrToken(funded).getData().getPayload(), UUID.randomUUID().toString()), terminal);
         stale.setFcmToken("synthetic-update");
         assertThatThrownBy(() -> passengers.saveAndFlush(stale)).isInstanceOf(org.springframework.dao.OptimisticLockingFailureException.class);
-        assertThat(passengers.findById(funded.getId()).orElseThrow().getBalance()).isEqualByComparingTo("140.00");
+        assertThat(passengers.findById(funded.getId()).orElseThrow().getBalance()).isEqualByComparingTo("125.00");
     }
     @Test void sharedIdentityCannotCrossPaymentMethods() {
         var terminal = device(); String key = UUID.randomUUID().toString(); var request = request("test", key);
@@ -203,11 +299,11 @@ class FareIntegrityRegressionTest {
         var results = race(2, i -> i == 0 ? fares.processQrPayment(request(payload, UUID.randomUUID().toString()), terminal)
                 : adminService.addBalance(admin, passenger.getId(), new BigDecimal("100.00"), "Synthetic reconciliation test", "127.0.0.1"));
         assertThat(results).noneMatch(RuntimeException.class::isInstance);
-        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("240.00");
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("225.00");
         var rows = transactions.findByPassengerIdOrderByCreatedAtDesc(passenger.getId(), org.springframework.data.domain.PageRequest.of(0, 20)).getContent();
         assertThat(rows).hasSize(2);
         BigDecimal delta = rows.stream().map(row -> row.getBalanceAfter().subtract(row.getBalanceBefore())).reduce(BigDecimal.ZERO, BigDecimal::add);
-        assertThat(delta).isEqualByComparingTo("40.00");
+        assertThat(delta).isEqualByComparingTo("25.00");
     }
     @Test void rolledBackFareCanRetrySameIdentityAndNonce() {
         var passenger = passenger("200.00"); var terminal = device();
@@ -217,14 +313,14 @@ class FareIntegrityRegressionTest {
             throw new IllegalStateException("synthetic rollback before commit");
         })).isInstanceOf(IllegalStateException.class);
         assertThat(ledgerCount(passenger)).isZero();
-        assertThat(fares.processQrPayment(request, terminal).getData().getRemainingBalance()).isEqualByComparingTo("140.00");
+        assertThat(fares.processQrPayment(request, terminal).getData().getRemainingBalance()).isEqualByComparingTo("125.00");
         assertThat(ledgerCount(passenger)).isEqualTo(1);
     }
     @Test void exactDiscountAndZeroBalanceAreEnforced() {
-        var passenger = passenger("48.00"); passenger.setCardCategory(PassengerCardCategory.STUDENT); passenger.setDiscountEligible(true);
+        var passenger = passenger("60.00"); passenger.setCardCategory(PassengerCardCategory.STUDENT); passenger.setDiscountEligible(true);
         passenger = passengers.saveAndFlush(passenger); var terminal = device();
         var result = fares.processQrPayment(request(fares.generateQrToken(passenger).getData().getPayload(), UUID.randomUUID().toString()), terminal).getData();
-        assertThat(result.getDeductedFare()).isEqualByComparingTo("48.00"); assertThat(result.getRemainingBalance()).isEqualByComparingTo("0.00");
+        assertThat(result.getDeductedFare()).isEqualByComparingTo("60.00"); assertThat(result.getRemainingBalance()).isEqualByComparingTo("0.00");
         var next = request(fares.generateQrToken(passenger).getData().getPayload(), UUID.randomUUID().toString());
         assertThatThrownBy(() -> fares.processQrPayment(next, terminal)).isInstanceOf(ClientException.class);
         assertThat(ledgerCount(passenger)).isEqualTo(1);
@@ -243,7 +339,7 @@ class FareIntegrityRegressionTest {
         assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("200.00");
         var unchanged = transactions.findById(original.getId()).orElseThrow();
         assertThat(unchanged.getStatus()).isEqualTo(TransactionStatus.SUCCESS);
-        assertThat(unchanged.getBalanceAfter()).isEqualByComparingTo("140.00");
+        assertThat(unchanged.getBalanceAfter()).isEqualByComparingTo("125.00");
         assertThat(transactions.findByReversalOfId(original.getId())).isPresent();
         admin.setRole(com.premier.admin.model.AdminRole.ADMIN);
         assertThatThrownBy(() -> adminService.reverseFare(admin, original.getId(), "Unauthorized attempt for regression")).isInstanceOf(ClientException.class);

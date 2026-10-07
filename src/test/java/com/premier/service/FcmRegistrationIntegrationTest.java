@@ -93,8 +93,8 @@ class FcmRegistrationIntegrationTest {
                 org.mockito.ArgumentMatchers.eq(payment.getReferenceNumber()), org.mockito.ArgumentMatchers.anyLong());
         var stored = notices.findById(intent.getId()).orElseThrow();
         assertThat(stored.getStatus()).isEqualTo(providerFails ? "PENDING" : "DELIVERED");
-        assertThat(passengers.findById(owner.getId()).orElseThrow().getBalance()).isEqualByComparingTo("140.00");
-        System.out.printf("FCM_SYNTHETIC_DB_EVIDENCE passenger=%d notification=%d kind=%s status=%s attempts=%d wallet=140.00 providerMocked=true%n",
+        assertThat(passengers.findById(owner.getId()).orElseThrow().getBalance()).isEqualByComparingTo("125.00");
+        System.out.printf("FCM_SYNTHETIC_DB_EVIDENCE passenger=%d notification=%d kind=%s status=%s attempts=%d wallet=125.00 providerMocked=true%n",
                 owner.getId(), stored.getId(), stored.getKind(), stored.getStatus(), stored.getAttempts());
     }
 }

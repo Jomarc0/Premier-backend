@@ -21,6 +21,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import static com.premier.config.FarePolicy.REGULAR_FARE;
+import static com.premier.config.FarePolicy.DISCOUNTED_FARE;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
@@ -34,7 +36,6 @@ import java.util.UUID;
 @Slf4j
 public class FarePaymentService {
 
-    private static final BigDecimal FIXED_FARE = new BigDecimal("60.00");
     private static final long COOLDOWN_SECONDS = 8L;
     private static final String QR_PREFIX = "PREMIER-FARE:";
     private static final String MOBILE_NFC_PREFIX = "PREMIER-NFC:";
@@ -388,7 +389,7 @@ public class FarePaymentService {
         FarePaymentResponse data = FarePaymentResponse.builder()
                 .cardNumber(mask(passenger.getCardNumber()))
                 .rfidUid(null)
-                .baseFare(FIXED_FARE)
+                .baseFare(REGULAR_FARE)
                 .deductedFare(fare)
                 .discountType(discountType)
                 .balanceBefore(balanceBefore)
@@ -542,10 +543,13 @@ public class FarePaymentService {
     }
 
     private FarePaymentResponse toFarePaymentResponse(Transaction tx, String source) {
+        if (tx.getResponseSnapshot() != null && !tx.getResponseSnapshot().isBlank()) {
+            return paymentIdentity.response(tx.getResponseSnapshot());
+        }
+        // Legacy rows have no base-fare snapshot; never apply today's tariff to history.
         return FarePaymentResponse.builder()
                 .cardNumber(mask(tx.getPassenger().getCardNumber()))
                 .rfidUid(null)
-                .baseFare(FIXED_FARE)
                 .deductedFare(tx.getAmount())
                 .discountType(discountTypeFor(tx.getPassenger()))
                 .balanceBefore(tx.getBalanceBefore())
@@ -564,9 +568,9 @@ public class FarePaymentService {
         if (Boolean.TRUE.equals(passenger.getDiscountEligible())
                 && passenger.getCardCategory() != null
                 && passenger.getCardCategory() != PassengerCardCategory.REGULAR) {
-            return FIXED_FARE.multiply(new BigDecimal("0.80"));
+            return DISCOUNTED_FARE;
         }
-        return FIXED_FARE;
+        return REGULAR_FARE;
     }
 
     private String discountTypeFor(Passenger passenger) {
