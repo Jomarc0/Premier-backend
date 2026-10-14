@@ -38,8 +38,8 @@ class AdminVehicleMonitoringControllerTest {
         controller = new AdminVehicleMonitoringController(vehicleRepository, locationRepository, deviceRepository);
         ReflectionTestUtils.setField(controller, "onlineMinutes", 5L);
         ReflectionTestUtils.setField(controller, "offlineMinutes", 15L);
-        ReflectionTestUtils.setField(controller, "pointALatitude", 13.954781);
-        ReflectionTestUtils.setField(controller, "pointALongitude", 121.163096);
+        ReflectionTestUtils.setField(controller, "pointALatitude", 13.954324);
+        ReflectionTestUtils.setField(controller, "pointALongitude", 121.162072);
         ReflectionTestUtils.setField(controller, "pointBLatitude", 13.78962);
         ReflectionTestUtils.setField(controller, "pointBLongitude", 121.06170);
     }

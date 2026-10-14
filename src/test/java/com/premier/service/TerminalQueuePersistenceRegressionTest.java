@@ -29,8 +29,8 @@ import static org.assertj.core.api.Assertions.*;
 class TerminalQueuePersistenceRegressionTest {
     private static final double GRAND_LAT = 13.78962;
     private static final double GRAND_LNG = 121.06170;
-    private static final double SM_LAT = 13.954781;
-    private static final double SM_LNG = 121.163096;
+    private static final double SM_LAT = 13.954324;
+    private static final double SM_LNG = 121.162072;
 
     @Autowired BusQueueService queue;
     @Autowired GpsTelemetryService gps;

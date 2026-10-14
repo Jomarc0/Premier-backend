@@ -37,9 +37,9 @@ public class AdminVehicleMonitoringController {
     private long onlineMinutes;
     @Value("${vehicle.monitoring.offline-minutes:15}")
     private long offlineMinutes;
-    @Value("${premier.terminals.sm.latitude:13.954781}")
+    @Value("${premier.terminals.sm.latitude:13.954324}")
     private double pointALatitude;
-    @Value("${premier.terminals.sm.longitude:121.163096}")
+    @Value("${premier.terminals.sm.longitude:121.162072}")
     private double pointALongitude;
     @Value("${premier.terminals.grand.latitude:13.78962}")
     private double pointBLatitude;

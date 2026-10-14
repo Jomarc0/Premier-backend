@@ -36,9 +36,9 @@ public class BusQueueService {
     private final com.premier.device.repository.DeviceRepository devices;
     private final RealtimeEventPublisher events;
 
-    @org.springframework.beans.factory.annotation.Value("${premier.terminals.sm.latitude:13.954781}")
+    @org.springframework.beans.factory.annotation.Value("${premier.terminals.sm.latitude:13.954324}")
     private double smTerminalLatitude;
-    @org.springframework.beans.factory.annotation.Value("${premier.terminals.sm.longitude:121.163096}")
+    @org.springframework.beans.factory.annotation.Value("${premier.terminals.sm.longitude:121.162072}")
     private double smTerminalLongitude;
     @org.springframework.beans.factory.annotation.Value("${premier.terminals.grand.latitude:13.78962}")
     private double grandTerminalLatitude;

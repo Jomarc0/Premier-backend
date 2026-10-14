@@ -28,8 +28,8 @@ public class RfidController {
     private final RealtimeEventPublisher realtimeEventPublisher;
     private final com.premier.device.service.GpsTelemetryService gpsTelemetry;
 
-    private static final double SM_LIPA_LAT = 13.954781;
-    private static final double SM_LIPA_LNG = 121.163096;
+    private static final double SM_LIPA_LAT = 13.954324;
+    private static final double SM_LIPA_LNG = 121.162072;
 
     @PostMapping("/tap")
     public ResponseEntity<?> tapCard(@RequestBody DeviceFareRequest request) {
