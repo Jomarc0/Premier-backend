@@ -8,7 +8,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class FareConfigurationServiceTest {
-    private FareConfigurationService service(FareConfigurationRepository repository) { return new FareConfigurationService(repository); }
+    private FareConfigurationService service(FareConfigurationRepository repository) {
+        return new FareConfigurationService(repository, mock(FareConfigurationNotificationService.class));
+    }
 
     @Test void updatesBothFaresAgainstTheCurrentVersion() {
         FareConfiguration current = FareConfiguration.builder().id(1L).regularFare(new BigDecimal("75.00"))

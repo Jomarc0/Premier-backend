@@ -17,9 +17,10 @@ public class FareConfigurationController {
     private final FareConfigurationService service;
     @GetMapping("/api/admin/fares")
     public ResponseEntity<?> adminGet() { return ResponseEntity.ok(ApiResponse.success("Active fare configuration fetched.", service.getActiveDto())); }
+    /** SUPER_ADMIN-only through SecurityConfig; broadcasts a push announcement after commit when prices change. */
     @PutMapping("/api/admin/fares")
     public ResponseEntity<?> update(@Valid @RequestBody UpdateRequest request, @AuthenticationPrincipal Admin admin) {
-        return ResponseEntity.ok(ApiResponse.success("Fare configuration updated.",service.toDto(service.update(request.regularFare(),request.discountedFare(),request.version(),admin))));
+        return ResponseEntity.ok(ApiResponse.success("Fare configuration updated.",service.updateAndReturnDto(request.regularFare(),request.discountedFare(),request.version(),admin)));
     }
     @GetMapping("/api/passenger/fare/config")
     public ResponseEntity<?> passengerGet() { return ResponseEntity.ok(ApiResponse.success("Active fare configuration fetched.", service.getActiveDto())); }
