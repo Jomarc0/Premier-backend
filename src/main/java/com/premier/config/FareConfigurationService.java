@@ -1,17 +1,27 @@
 package com.premier.config;
 
 import com.premier.admin.model.Admin;
+import com.premier.repository.PassengerFcmTokenRepository;
+import com.premier.service.FirebaseService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
-@Service @RequiredArgsConstructor
+@Service @RequiredArgsConstructor @Slf4j
 public class FareConfigurationService {
+    private static final int NOTIFICATION_BATCH_SIZE = 500;
     private final FareConfigurationRepository repository;
-    private final FareConfigurationNotificationService fareNotifications;
+    private final PassengerFcmTokenRepository passengerTokens;
+    private final FirebaseService firebaseService;
 
     @Transactional(readOnly=true)
     public FareConfiguration getActive() {
@@ -35,7 +45,7 @@ public class FareConfigurationService {
         current.setRegularFare(regular); current.setDiscountedFare(discounted); current.setUpdatedBy(admin);
         FareConfiguration saved = repository.saveAndFlush(current);
         if (changed) {
-            Runnable dispatch = () -> fareNotifications.notifyAllPassengers(saved.getRegularFare(), saved.getDiscountedFare(), saved.getVersion());
+            Runnable dispatch = () -> dispatchFareUpdateNotifications(saved.getRegularFare(), saved.getDiscountedFare(), saved.getVersion());
             if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
                     && org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
                 org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
@@ -47,6 +57,29 @@ public class FareConfigurationService {
             }
         }
         return saved;
+    }
+
+    private void dispatchFareUpdateNotifications(BigDecimal regularFare, BigDecimal discountedFare, Long version) {
+        CompletableFuture.runAsync(() -> {
+            String title = "Premier fare update";
+            String message = "New fares are active: regular PHP " + regularFare.toPlainString()
+                    + ", discounted PHP " + discountedFare.toPlainString() + ".";
+            Pageable pageable = PageRequest.of(0, NOTIFICATION_BATCH_SIZE);
+            Page<String> page;
+            do {
+                page = passengerTokens.findDistinctFcmTokens(pageable);
+                List<String> destinations = page.getContent().stream()
+                        .filter(token -> token != null && !token.isBlank()).toList();
+                if (!destinations.isEmpty()) firebaseService.sendToMultiple(destinations, title, message);
+                pageable = page.nextPageable();
+            } while (page.hasNext());
+            log.info("Fare update notification dispatch completed version={} registeredDevices={}", version,
+                    page.getTotalElements());
+        }).exceptionally(error -> {
+            log.warn("Fare update notification dispatch failed for version={}: {}", version,
+                    error.getClass().getSimpleName());
+            return null;
+        });
     }
 
     @Transactional

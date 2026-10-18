@@ -9,7 +9,8 @@ import static org.mockito.Mockito.*;
 
 class FareConfigurationServiceTest {
     private FareConfigurationService service(FareConfigurationRepository repository) {
-        return new FareConfigurationService(repository, mock(FareConfigurationNotificationService.class));
+        return new FareConfigurationService(repository, mock(com.premier.repository.PassengerFcmTokenRepository.class),
+                mock(com.premier.service.FirebaseService.class));
     }
 
     @Test void updatesBothFaresAgainstTheCurrentVersion() {
