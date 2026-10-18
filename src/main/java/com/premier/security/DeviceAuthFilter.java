@@ -40,6 +40,7 @@ public class DeviceAuthFilter extends OncePerRequestFilter {
                 || path.equals("/api/rfid/heartbeat")
                 || path.equals("/api/rfid/qr/process")
                 || path.equals("/api/rfid/nfc/tap")
+                || path.equals("/api/rfid/fare-config")
                 || path.equals("/api/rfid/gps")
                 || path.equals("/api/rfid/registration/uid-request")
                 || path.equals("/api/rfid/registration/uid-capture");

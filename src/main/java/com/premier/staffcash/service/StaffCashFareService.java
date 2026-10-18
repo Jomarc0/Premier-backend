@@ -16,7 +16,6 @@ import com.premier.staffcash.repository.StaffCashTransactionRepository;
 import com.premier.staffcash.request.RegisterStaffCashCardRequest;
 import com.premier.staffcash.response.*;
 import lombok.RequiredArgsConstructor;
-import static com.premier.config.FarePolicy.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +34,7 @@ public class StaffCashFareService {
     private final PassengerRepository passengerRepository;
     private final DeviceService deviceService;
     private final com.premier.payment.service.PaymentIdentity paymentIdentity;
+    private final com.premier.config.FareConfigurationService fareConfigurations;
 
     public boolean isStaffCashCard(String uid) {
         return findCard(uid).isPresent();
@@ -81,10 +81,14 @@ public class StaffCashFareService {
         String plate = normalizePlate(vehicle.getPlateNumber());
         LocalDateTime offlineCapturedAt = com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
 
+        var fareConfig = fareConfigurations.getActive();
+        BigDecimal regularFare = fareConfig.getRegularFare();
+        BigDecimal selectedFare = card.getPurpose() == StaffCashCardPurpose.DISCOUNTED_CASH
+                ? fareConfig.getDiscountedFare() : regularFare;
         BigDecimal discount = card.getPurpose() == StaffCashCardPurpose.DISCOUNTED_CASH
-                ? REGULAR_FARE.subtract(DISCOUNTED_FARE)
+                ? regularFare.subtract(selectedFare)
                 : BigDecimal.ZERO;
-        BigDecimal finalFare = REGULAR_FARE.subtract(discount);
+        BigDecimal finalFare = regularFare.subtract(discount);
         String route = clean(vehicle.getRoute());
         com.premier.trip.model.TripDirection direction = directionFor(route);
         String origin = direction == null ? originTerminal(route) : direction.origin();
@@ -97,7 +101,9 @@ public class StaffCashFareService {
                 .vehiclePlateNumber(plate)
                 .deviceId(device.deviceId())
                 .fareCategory(card.getPurpose())
-                .baseFare(REGULAR_FARE)
+                .baseFare(regularFare)
+                .fareConfigurationVersion(fareConfig.getVersion())
+                .submittedFareConfigurationVersion(request.getFareConfigurationVersion())
                 .discountAmount(discount)
                 .finalFare(finalFare)
                 .referenceNumber("CASH-" + UUID.randomUUID().toString().replace("-", "").toUpperCase())

@@ -70,6 +70,12 @@ public class Transaction {
     @Column(name = "offline_captured_at")
     private LocalDateTime offlineCapturedAt;
 
+    @Column(name = "fare_configuration_version")
+    private Long fareConfigurationVersion;
+
+    @Column(name = "submitted_fare_configuration_version")
+    private Long submittedFareConfigurationVersion;
+
     @Column(name = "device_id", length = 80)
     private String deviceId;
 

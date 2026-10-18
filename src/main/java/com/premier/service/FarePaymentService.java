@@ -21,8 +21,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import static com.premier.config.FarePolicy.REGULAR_FARE;
-import static com.premier.config.FarePolicy.DISCOUNTED_FARE;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
@@ -50,6 +48,7 @@ public class FarePaymentService {
     private final com.premier.payment.service.PaymentIdentity paymentIdentity;
     private final com.premier.payment.service.PaymentFailureRecorder paymentFailureRecorder;
     private final com.premier.payment.service.PaymentNotificationService paymentNotifications;
+    private final com.premier.config.FareConfigurationService fareConfigurations;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -325,7 +324,8 @@ public class FarePaymentService {
         }
         paymentPerf(source, "duplicate_check_complete", performanceStarted);
 
-        BigDecimal fare = fareFor(passenger);
+        var fareConfig = fareConfigurations.getActive();
+        BigDecimal fare = fareFor(passenger, fareConfig);
         String discountType = discountTypeFor(passenger);
         paymentPerf(source, "fare_calculation_complete", performanceStarted);
 
@@ -356,6 +356,8 @@ public class FarePaymentService {
                 .type(TransactionType.FARE_DEDUCTION)
                 .status(TransactionStatus.SUCCESS)
                 .amount(fare)
+                .fareConfigurationVersion(fareConfig.getVersion())
+                .submittedFareConfigurationVersion(request != null ? request.getFareConfigurationVersion() : null)
                 .balanceBefore(balanceBefore)
                 .balanceAfter(balanceAfter)
                 .referenceNumber(refNumber)
@@ -389,7 +391,7 @@ public class FarePaymentService {
         FarePaymentResponse data = FarePaymentResponse.builder()
                 .cardNumber(mask(passenger.getCardNumber()))
                 .rfidUid(null)
-                .baseFare(REGULAR_FARE)
+                .baseFare(fareConfig.getRegularFare())
                 .deductedFare(fare)
                 .discountType(discountType)
                 .balanceBefore(balanceBefore)
@@ -564,13 +566,13 @@ public class FarePaymentService {
         return value == null || value.trim().isEmpty() ? null : value.trim();
     }
 
-    private BigDecimal fareFor(Passenger passenger) {
+    private BigDecimal fareFor(Passenger passenger, com.premier.config.FareConfiguration configuration) {
         if (Boolean.TRUE.equals(passenger.getDiscountEligible())
                 && passenger.getCardCategory() != null
                 && passenger.getCardCategory() != PassengerCardCategory.REGULAR) {
-            return DISCOUNTED_FARE;
+            return configuration.getDiscountedFare();
         }
-        return REGULAR_FARE;
+        return configuration.getRegularFare();
     }
 
     private String discountTypeFor(Passenger passenger) {

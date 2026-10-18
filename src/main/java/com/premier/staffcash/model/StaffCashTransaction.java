@@ -70,6 +70,12 @@ public class StaffCashTransaction {
     @Column(name = "final_fare", nullable = false, precision = 10, scale = 2)
     private BigDecimal finalFare;
 
+    @Column(name = "fare_configuration_version")
+    private Long fareConfigurationVersion;
+
+    @Column(name = "submitted_fare_configuration_version")
+    private Long submittedFareConfigurationVersion;
+
     @Column(name = "reference_number", nullable = false, length = 40)
     private String referenceNumber;
 

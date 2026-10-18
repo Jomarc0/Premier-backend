@@ -37,9 +37,14 @@ class FareIntegrityRegressionTest {
     @Autowired com.premier.payment.repository.PaymentNotificationRepository notifications;
     @Autowired com.premier.payment.service.PaymentNotificationService notificationHistory;
     @Autowired com.premier.driver.repository.VehicleRepository vehicles;
+    @Autowired com.premier.config.FareConfigurationRepository fareConfigurations;
 
     @BeforeEach
     void ensureActiveVehicle() {
+        fareConfigurations.findById(1L).orElseGet(() -> fareConfigurations.saveAndFlush(
+                com.premier.config.FareConfiguration.builder().id(1L)
+                        .regularFare(new BigDecimal("75.00")).discountedFare(new BigDecimal("60.00"))
+                        .currency("PHP").version(0L).build()));
         var vehicle = vehicles.findByPlateNumber("TEST-01").orElseGet(() ->
                 com.premier.driver.model.Vehicle.builder()
                         .plateNumber("TEST-01")

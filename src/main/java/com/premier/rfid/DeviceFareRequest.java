@@ -18,6 +18,7 @@ public class DeviceFareRequest {
     private String offlineTransactionId;
     private String offlineCapturedAt;
     private BigDecimal fareAmount;
+    private Long fareConfigurationVersion;
     private Double latitude;
     private Double longitude;
 }

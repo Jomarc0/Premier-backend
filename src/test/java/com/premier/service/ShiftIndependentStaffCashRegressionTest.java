@@ -57,6 +57,15 @@ class ShiftIndependentStaffCashRegressionTest {
     @Autowired DriverRepository drivers;
     @Autowired DriverShiftRepository shifts;
     @Autowired VehicleTripRepository trips;
+    @Autowired com.premier.config.FareConfigurationRepository fareConfigurations;
+
+    @org.junit.jupiter.api.BeforeEach
+    void ensureFareConfiguration() {
+        fareConfigurations.findById(1L).orElseGet(() -> fareConfigurations.saveAndFlush(
+                com.premier.config.FareConfiguration.builder().id(1L)
+                        .regularFare(new BigDecimal("75.00")).discountedFare(new BigDecimal("60.00"))
+                        .currency("PHP").version(0L).build()));
+    }
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"REGULAR_CASH,75.00", "DISCOUNTED_CASH,60.00"})

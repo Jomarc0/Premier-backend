@@ -123,6 +123,12 @@ public class SecurityConfig {
                     "/api/rfid/nfc/tap",
                     "/api/rfid/gps", "/api/rfid/heartbeat")
                     .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
+                .requestMatchers(HttpMethod.GET, "/api/rfid/fare-config")
+                    .hasAnyAuthority("DEVICE_RFID_TERMINAL", "DEVICE_VEHICLE_TERMINAL")
+
+                // Fare pricing is a high-impact configuration reserved for super admins.
+                .requestMatchers("/api/admin/fares", "/api/admin/fares/**")
+                    .hasAuthority("SUPER_ADMIN")
 
                 .requestMatchers(
                     "/api/rfid/registration/uid-request",
