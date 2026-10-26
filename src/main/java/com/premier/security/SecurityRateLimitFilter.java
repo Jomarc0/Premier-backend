@@ -13,6 +13,7 @@ import java.util.Map;
 /** Bounded per-instance safety net. Edge/distributed limits must also be configured. */
 @Component
 public class SecurityRateLimitFilter extends OncePerRequestFilter {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(SecurityRateLimitFilter.class);
     private static final int MAX_KEYS = 10000;
     private static final long TTL = Duration.ofHours(2).toNanos();
     private final Map<String, Entry> buckets = new HashMap<>();
@@ -39,7 +40,14 @@ public class SecurityRateLimitFilter extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         // Only the transport peer is trusted here. Spoofed device/forwarding headers cannot create a fresh identity.
-        if (!consume("peer:" + request.getRemoteAddr(), policy(request))) { reject(response); return; }
+        long started = System.nanoTime();
+        boolean accepted = consume("peer:" + request.getRemoteAddr(), policy(request));
+        String path = request.getServletPath();
+        if (path.equals("/api/rfid/tap") || path.equals("/api/rfid/qr/process") || path.equals("/api/rfid/nfc/tap")) {
+            log.info("[PERF] stage=rate_limit_filter_complete elapsedMs={} accepted={}",
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), accepted);
+        }
+        if (!accepted) { reject(response); return; }
         chain.doFilter(request, response);
     }
     synchronized boolean consume(String identity, Policy policy) {

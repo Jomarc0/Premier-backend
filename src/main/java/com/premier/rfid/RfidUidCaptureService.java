@@ -133,7 +133,7 @@ public class RfidUidCaptureService {
         session.setRfidUid(normalizedUid);
         session.setCapturedAt(now);
         sessions.saveAndFlush(session);
-        logSession("COMPLETED uid=" + normalizedUid, session, now);
+        logSession("COMPLETED", session, now);
         return response(true, "RFID_CAPTURED", "RFID UID captured.", sessionData(session, now));
     }
 

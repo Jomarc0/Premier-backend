@@ -15,6 +15,35 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class AuthenticationFilterBoundaryTest {
+    @Test void paymentCorrelationIdIsValidatedEchoedAndScopedToRequest() throws Exception {
+        var request = new MockHttpServletRequest("POST", "/api/rfid/tap");
+        request.setServletPath("/api/rfid/tap");
+        request.addHeader("X-Payment-Correlation-Id", "OFF-0123456789abcdef0123456789abcdef");
+        var response = new MockHttpServletResponse();
+
+        new RequestCorrelationFilter().doFilter(request, response, (req, res) -> {
+            assertEquals("OFF-0123456789abcdef0123456789abcdef",
+                    org.slf4j.MDC.get("paymentCorrelationId"));
+        });
+
+        assertEquals("OFF-0123456789abcdef0123456789abcdef",
+                response.getHeader("X-Payment-Correlation-Id"));
+        assertNull(org.slf4j.MDC.get("paymentCorrelationId"));
+    }
+
+    @Test void invalidPaymentCorrelationHeaderIsNotLoggedOrEchoed() throws Exception {
+        var request = new MockHttpServletRequest("POST", "/api/rfid/tap");
+        request.setServletPath("/api/rfid/tap");
+        request.addHeader("X-Payment-Correlation-Id", "OFF-1234567890\nforged");
+        var response = new MockHttpServletResponse();
+
+        new RequestCorrelationFilter().doFilter(request, response, (req, res) ->
+                assertNull(org.slf4j.MDC.get("paymentCorrelationId")));
+
+        assertNull(response.getHeader("X-Payment-Correlation-Id"));
+        assertNull(org.slf4j.MDC.get("paymentCorrelationId"));
+    }
+
     @AfterEach void clear() { SecurityContextHolder.clearContext(); DeviceContext.clear(); }
     @Test void downstreamDeviceFailureIsNotRewrittenAsUnauthorized() throws Exception {
         var devices = mock(DeviceService.class);

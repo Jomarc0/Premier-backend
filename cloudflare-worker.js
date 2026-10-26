@@ -65,10 +65,12 @@ async function proxyHttp(request, url, origin) {
   const candidateBackends = captureRoute ? [BACKENDS[0]] : BACKENDS;
   const startIndex = captureRoute ? 0 : counter++ % candidateBackends.length;
   const safeToRetry = ['GET', 'HEAD'].includes(request.method);
+  const proxyStarted = performance.now();
   let lastError;
 
   for (let offset = 0; offset < candidateBackends.length; offset += 1) {
-    const backend = candidateBackends[(startIndex + offset) % candidateBackends.length];
+    const backendIndex = (startIndex + offset) % candidateBackends.length;
+    const backend = candidateBackends[backendIndex];
     try {
       const response = await fetch(`${backend}${url.pathname}${url.search}`, {
         method: request.method,
@@ -79,17 +81,21 @@ async function proxyHttp(request, url, origin) {
 
       // Do not send a request that may have changed money or account state to
       // a second backend. The client can safely retry with its idempotency key.
-      if (response.status < 500 || !safeToRetry) return withResponseHeaders(response, origin);
+      if (response.status < 500 || !safeToRetry) {
+        return withResponseHeaders(response, origin, backendIndex === 0 ? 'primary' : 'fallback', performance.now() - proxyStarted);
+      }
       lastError = `Backend returned ${response.status}`;
     } catch {
       if (!safeToRetry) {
-        return jsonResponse({ error: 'Backend request failed. Please retry.' }, 502, origin);
+        return withResponseHeaders(jsonResponse({ error: 'Backend request failed. Please retry.' }, 502, origin), origin,
+          backendIndex === 0 ? 'primary' : 'fallback', performance.now() - proxyStarted);
       }
       lastError = 'Backend unreachable';
     }
   }
 
-  return jsonResponse({ error: 'All backends unreachable', detail: lastError }, 502, origin);
+  return withResponseHeaders(jsonResponse({ error: 'All backends unreachable', detail: lastError }, 502, origin), origin,
+    'unavailable', performance.now() - proxyStarted);
 }
 
 async function proxyWebSocket(request, url, origin) {
@@ -127,11 +133,13 @@ async function proxyWebSocket(request, url, origin) {
   return jsonResponse({ error: 'WebSocket backend unavailable', detail: lastError }, 502, origin);
 }
 
-function withResponseHeaders(response, origin) {
+function withResponseHeaders(response, origin, backend, upstreamMs) {
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(corsHeaders(origin))) headers.set(key, value);
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  headers.set('X-Proxy-Backend', backend);
+  headers.set('X-Proxy-Upstream-Ms', String(Math.round(upstreamMs)));
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -202,6 +210,7 @@ function corsHeaders(origin) {
   const common = {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Origin, X-Requested-With, Idempotency-Key',
+    'Access-Control-Expose-Headers': 'X-Request-Reference, X-Proxy-Backend, X-Proxy-Upstream-Ms',
     'Access-Control-Allow-Credentials': 'true',
   };
   if (!origin) return common;

@@ -53,10 +53,14 @@ public class DeviceAuthFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         DevicePrincipal principal;
+        long authenticationStarted = System.nanoTime();
         try {
             principal = deviceService.authenticate(
                     request.getHeader("X-Device-Id"),
                     request.getHeader("X-Device-Token"));
+            if (isPaymentEndpoint(request.getServletPath())) {
+                log.info("[PERF] stage=device_authentication_complete elapsedMs={}", elapsedMillis(authenticationStarted));
+            }
         } catch (SecurityException rejected) {
             sendUnauthorized(response);
             return;
@@ -71,6 +75,15 @@ public class DeviceAuthFilter extends OncePerRequestFilter {
         } finally {
             DeviceContext.clear();
         }
+    }
+
+    private boolean isPaymentEndpoint(String path) {
+        return path.equals("/api/rfid/tap") || path.equals("/api/rfid/qr/process")
+                || path.equals("/api/rfid/nfc/tap");
+    }
+
+    private long elapsedMillis(long started) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     }
 
     private void setAuthority(String authority) {

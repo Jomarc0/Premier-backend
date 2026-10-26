@@ -284,8 +284,11 @@ public class FarePaymentService {
                     .orElseGet(() -> {
                         validateDevicePaymentRequest(request, device);
                         String normalizedUid = request.getRfidUid().trim().toUpperCase();
+                        long lookupStarted = System.nanoTime();
                         Passenger passenger = passengerRepository.findLockedByRfidUid(normalizedUid)
                                 .orElseThrow(() -> new com.premier.exception.ClientException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RFID", "Card not recognized. Please register your card."));
+                        log.info("[PERF] payment=RFID stage=passenger_card_lookup_complete elapsedMs={}",
+                                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lookupStarted));
                         return processPassengerFare(passenger.getId(), normalizedUid, "RFID",
                                 request.getPlateNumber(), true, key, device, request);
                     });
@@ -514,7 +517,8 @@ public class FarePaymentService {
 
     private void paymentPerf(String method, String stage, long started) {
         long elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
-        log.info("[PERF] payment={} stage={} elapsedMs={}", method, stage, elapsed);
+        log.info("[PERF] payment={} stage={} elapsedMs={} paymentCorrelationId={}", method, stage, elapsed,
+                org.slf4j.MDC.get("paymentCorrelationId"));
     }
 
     private java.util.Optional<FareQrToken> lockedToken(String hash) {
