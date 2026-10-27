@@ -38,13 +38,14 @@ class FareIntegrityRegressionTest {
     @Autowired com.premier.payment.service.PaymentNotificationService notificationHistory;
     @Autowired com.premier.driver.repository.VehicleRepository vehicles;
     @Autowired com.premier.config.FareConfigurationRepository fareConfigurations;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @BeforeEach
     void ensureActiveVehicle() {
         fareConfigurations.findById(1L).orElseGet(() -> fareConfigurations.saveAndFlush(
                 com.premier.config.FareConfiguration.builder().id(1L)
                         .regularFare(new BigDecimal("75.00")).discountedFare(new BigDecimal("60.00"))
-                        .currency("PHP").version(0L).build()));
+                        .currency("PHP").build()));
         var vehicle = vehicles.findByPlateNumber("TEST-01").orElseGet(() ->
                 com.premier.driver.model.Vehicle.builder()
                         .plateNumber("TEST-01")
@@ -264,6 +265,70 @@ class FareIntegrityRegressionTest {
         assertThatThrownBy(() -> fares.processQrPayment(request(nfc, UUID.randomUUID().toString()), terminal)).isInstanceOf(ClientException.class);
         assertThat(ledgerCount(passenger)).isZero();
         assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("200.00");
+    }
+
+    @Test void qrCapturedInsideValidityWindowCanSyncAfterExpiry() {
+        var passenger = passenger("200.00"); var terminal = device();
+        String payload = fares.generateQrToken(passenger).getData().getPayload();
+        var token = tokens.findByPassengerIdAndStatus(passenger.getId(), FareQrTokenStatus.ACTIVE).get(0);
+        LocalDateTime created = LocalDateTime.now(ZoneId.of("Asia/Manila")).minusMinutes(2);
+        LocalDateTime expiry = created.plusSeconds(60);
+        jdbc.update("update fare_qr_tokens set created_at = ?, expires_at = ? where id = ?", created, expiry, token.getId());
+        var replay = request(payload, UUID.randomUUID().toString()); replay.setOfflineSync(true);
+        replay.setOfflineTransactionId(replay.getIdempotencyKey());
+        replay.setOfflineCapturedAt(created.plusSeconds(30).atZone(ZoneId.of("Asia/Manila")).toInstant().toString());
+        var first = fares.processQrPayment(replay, terminal).getData();
+        var retry = fares.processQrPayment(replay, terminal).getData();
+        assertThat(retry.getReferenceNumber()).isEqualTo(first.getReferenceNumber());
+        assertThat(ledgerCount(passenger)).isEqualTo(1);
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("125.00");
+    }
+
+    @Test void qrExpiredAtCaptureTimeCannotSyncOrDebit() {
+        var passenger = passenger("200.00"); var terminal = device();
+        String payload = fares.generateQrToken(passenger).getData().getPayload();
+        var token = tokens.findByPassengerIdAndStatus(passenger.getId(), FareQrTokenStatus.ACTIVE).get(0);
+        LocalDateTime created = LocalDateTime.now(ZoneId.of("Asia/Manila")).minusMinutes(2);
+        LocalDateTime expiry = created.plusSeconds(60);
+        jdbc.update("update fare_qr_tokens set created_at = ?, expires_at = ? where id = ?", created, expiry, token.getId());
+        var replay = request(payload, UUID.randomUUID().toString()); replay.setOfflineSync(true);
+        replay.setOfflineTransactionId(replay.getIdempotencyKey());
+        replay.setOfflineCapturedAt(expiry.plusSeconds(5).atZone(ZoneId.of("Asia/Manila")).toInstant().toString());
+        assertThatThrownBy(() -> fares.processQrPayment(replay, terminal)).isInstanceOf(ClientException.class)
+                .extracting("code").isEqualTo("QR_EXPIRED");
+        assertThat(ledgerCount(passenger)).isZero();
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("200.00");
+    }
+
+    @Test void nfcCapturedInsideValidityWindowCanSyncAfterExpiry() {
+        var passenger = passenger("200.00"); var terminal = device();
+        String tokenValue = fares.generateMobileNfcToken(passenger).getData().getToken();
+        var token = tokens.findByPassengerIdAndStatus(passenger.getId(), FareQrTokenStatus.ACTIVE).get(0);
+        LocalDateTime created = LocalDateTime.now(ZoneId.of("Asia/Manila")).minusMinutes(2);
+        LocalDateTime expiry = created.plusSeconds(60);
+        jdbc.update("update fare_qr_tokens set created_at = ?, expires_at = ? where id = ?", created, expiry, token.getId());
+        var replay = request(tokenValue, UUID.randomUUID().toString()); replay.setOfflineSync(true);
+        replay.setOfflineTransactionId(replay.getIdempotencyKey());
+        replay.setOfflineCapturedAt(created.plusSeconds(30).atZone(ZoneId.of("Asia/Manila")).toInstant().toString());
+        var first = fares.processMobileNfcTokenPayment(replay, terminal).getData();
+        var retry = fares.processMobileNfcTokenPayment(replay, terminal).getData();
+        assertThat(retry.getReferenceNumber()).isEqualTo(first.getReferenceNumber());
+        assertThat(ledgerCount(passenger)).isEqualTo(1);
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("125.00");
+    }
+
+    @Test void offlineRfidReplayDeductsOnceWithoutAnotherTap() {
+        var passenger = passenger("200.00"); var terminal = device();
+        passenger.setRfidUid(UUID.randomUUID().toString().replace("-", "").toUpperCase());
+        passenger = passengers.saveAndFlush(passenger);
+        var replay = request(null, UUID.randomUUID().toString()); replay.setRfidUid(passenger.getRfidUid());
+        replay.setOfflineSync(true); replay.setOfflineTransactionId(replay.getIdempotencyKey());
+        replay.setOfflineCapturedAt(Instant.now().minusSeconds(90).toString());
+        var first = fares.processRfidPayment(replay, terminal).getData();
+        var retry = fares.processRfidPayment(replay, terminal).getData();
+        assertThat(retry.getReferenceNumber()).isEqualTo(first.getReferenceNumber());
+        assertThat(ledgerCount(passenger)).isEqualTo(1);
+        assertThat(passengers.findById(passenger.getId()).orElseThrow().getBalance()).isEqualByComparingTo("125.00");
     }
     @Test void replayCannotChangeCapturedTimeRequestOrFare() {
         var passenger = passenger("200.00"); var terminal = device();

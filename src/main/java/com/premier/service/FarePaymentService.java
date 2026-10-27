@@ -176,8 +176,9 @@ public class FarePaymentService {
                         if (token.getStatus() == FareQrTokenStatus.USED) {
                             throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "QR authorization has already been used.");
                         }
-                        if ((token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila()))
-                                ) {
+                        boolean offlineReplay = Boolean.TRUE.equals(request.getOfflineSync());
+                        if (offlineReplay ? !wasValidWhenCaptured(request, token)
+                                : token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila())) {
                             token.setStatus(FareQrTokenStatus.EXPIRED);
                             fareQrTokenRepository.save(token);
                             throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "QR_EXPIRED", "QR fare token expired. Please generate a new one.");
@@ -227,7 +228,9 @@ public class FarePaymentService {
                         if (token.getStatus() == FareQrTokenStatus.USED) {
                             throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.CONFLICT, "QR_ALREADY_USED", "NFC authorization has already been used.");
                         }
-                        if (token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila())) {
+                        boolean offlineReplay = Boolean.TRUE.equals(request.getOfflineSync());
+                        if (offlineReplay ? !wasValidWhenCaptured(request, token)
+                                : token.getStatus() == FareQrTokenStatus.EXPIRED || token.getExpiresAt().isBefore(nowManila())) {
                             token.setStatus(FareQrTokenStatus.EXPIRED);
                             fareQrTokenRepository.save(token);
                             throw new com.premier.exception.ClientException(org.springframework.http.HttpStatus.GONE, "NFC_EXPIRED", "Mobile NFC token expired. Please generate a new one.");
@@ -531,6 +534,20 @@ public class FarePaymentService {
 
     private void requirePurpose(FareQrToken token, String purpose) {
         if (!purpose.equals(token.getPurpose())) throw paymentIdentity.conflict();
+    }
+
+    /**
+     * Offline replay may arrive after a short-lived token expires. Accept it only
+     * when the authenticated terminal explicitly marks a replay and its captured
+     * time falls inside the token's server-issued validity window. CaptureTime
+     * applies the existing device clock bounds; missing/untrusted time fails closed.
+     */
+    private boolean wasValidWhenCaptured(DeviceFareRequest request, FareQrToken token) {
+        if (request == null || !Boolean.TRUE.equals(request.getOfflineSync())) return false;
+        LocalDateTime capturedAt = com.premier.payment.service.CaptureTime.optional(request.getOfflineCapturedAt());
+        return token.getCreatedAt() != null
+                && !capturedAt.isBefore(token.getCreatedAt())
+                && !capturedAt.isAfter(token.getExpiresAt());
     }
 
     private LocalDateTime parseOptionalRequestTimestamp(String timestamp) {
