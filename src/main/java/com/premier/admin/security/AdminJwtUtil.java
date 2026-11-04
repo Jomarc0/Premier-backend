@@ -18,6 +18,8 @@ import lombok.RequiredArgsConstructor;
 @Component
 @RequiredArgsConstructor
 public class AdminJwtUtil {
+    private static final long ENROLLMENT_TOKEN_EXPIRATION_MILLIS = 30 * 60 * 1000L;
+
     private final AdminRepository adminRepository;
 
     @Value("${jwt.admin-secret}") 
@@ -41,7 +43,7 @@ public class AdminJwtUtil {
                 .claim("sv", admin.getSessionVersion())
                 .issuedAt(new Date())
                 .expiration(new Date(
-                    System.currentTimeMillis() + (enrollment ? 300000 : expiration)))
+                    System.currentTimeMillis() + (enrollment ? ENROLLMENT_TOKEN_EXPIRATION_MILLIS : expiration)))
                 .signWith(getSigningKey())
                 .compact();
     }

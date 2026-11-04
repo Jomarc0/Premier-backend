@@ -22,9 +22,6 @@ class FcmRegistrationIntegrationTest {
     @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @Autowired com.premier.device.repository.DeviceRepository devices;
     @Autowired com.premier.driver.repository.VehicleRepository vehicles;
-    @Autowired com.premier.driver.repository.DriverRepository drivers;
-    @Autowired com.premier.driver.repository.DriverShiftRepository shifts;
-    @Autowired com.premier.trip.repository.VehicleTripRepository trips;
 
     private Passenger passenger(String token) {
         return passengers.saveAndFlush(Passenger.builder().cardNumber(UUID.randomUUID().toString())
@@ -61,7 +58,8 @@ class FcmRegistrationIntegrationTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
     void committedFareReachesSenderAndProviderOutageCannotUndoMoney(boolean providerFails) throws Exception {
-        var activeTrip = TripTestFixture.activeTrip("TEST-01", vehicles, drivers, shifts, trips);
+        var vehicle = vehicles.saveAndFlush(com.premier.driver.model.Vehicle.builder()
+                .plateNumber("TEST-01").route("SM Terminal to Grand Terminal").totalCapacity(50).build());
         var owner = passenger(null);
         String destination = "synthetic-" + UUID.randomUUID();
         firebase.updateFcmToken(owner, request(destination));
@@ -69,7 +67,7 @@ class FcmRegistrationIntegrationTest {
                 com.premier.device.model.Device.builder().deviceId(UUID.randomUUID().toString())
                     .deviceName("isolated notification test terminal")
                     .deviceType(com.premier.device.model.DeviceType.VEHICLE_TERMINAL)
-                    .vehicleId(activeTrip.getVehicle().getId()).plateNumber("TEST-01").tokenHash("synthetic-not-a-credential").build()));
+                    .vehicleId(vehicle.getId()).plateNumber("TEST-01").tokenHash("synthetic-not-a-credential").build()));
         var fareRequest = new com.premier.rfid.DeviceFareRequest();
         fareRequest.setPayload(fares.generateQrToken(owner).getData().getPayload());
         fareRequest.setIdempotencyKey(UUID.randomUUID().toString()); fareRequest.setPlateNumber("TEST-01");
