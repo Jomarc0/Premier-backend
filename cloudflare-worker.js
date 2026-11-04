@@ -62,8 +62,14 @@ async function proxyHttp(request, url, origin) {
     || url.pathname.startsWith('/api/admin/rfid/uid-capture/')
     || url.pathname === '/api/rfid/registration/uid-request'
     || url.pathname === '/api/rfid/registration/uid-capture';
-  const candidateBackends = captureRoute ? [BACKENDS[0]] : BACKENDS;
-  const startIndex = captureRoute ? 0 : counter++ % candidateBackends.length;
+  // Keep admin authentication and TOTP enrollment on one backend. Enrollment
+  // tokens are issued at login and immediately reused for setup/verification;
+  // routing those requests to different backend deployments can reject a
+  // valid token when their signing keys or rollout versions differ.
+  const adminAuthRoute = url.pathname.startsWith('/api/admin/auth/');
+  const primaryOnlyRoute = captureRoute || adminAuthRoute;
+  const candidateBackends = primaryOnlyRoute ? [BACKENDS[0]] : BACKENDS;
+  const startIndex = primaryOnlyRoute ? 0 : counter++ % candidateBackends.length;
   const safeToRetry = ['GET', 'HEAD'].includes(request.method);
   const proxyStarted = performance.now();
   let lastError;
