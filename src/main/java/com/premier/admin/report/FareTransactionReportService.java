@@ -129,7 +129,7 @@ public class FareTransactionReportService {
         summary.put("reversedCount", reversed);
         summary.put("successfulRevenue", revenue);
         List<Map<String, Object>> paymentBreakdown = jdbc.queryForList(ROWS + """
-                select payment_method, count(*) filter (where status in ('SUCCESS', 'COMPLETED') and not reversed) as transaction_count,
+                select payment_method, count(*) as transaction_count,
                        coalesce(sum(case when status in ('SUCCESS', 'COMPLETED') and not reversed then fare_amount else 0 end), 0) as successful_amount
                   from report_rows group by payment_method order by payment_method
                 """, params);
