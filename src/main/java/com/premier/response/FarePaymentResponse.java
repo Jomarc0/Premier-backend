@@ -1,6 +1,5 @@
 package com.premier.response;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Builder;
 import lombok.Data;
 
@@ -23,6 +22,5 @@ public class FarePaymentResponse {
     private String source;
     private String plateNumber;
 
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime timestamp;
 }
