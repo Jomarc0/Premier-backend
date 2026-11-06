@@ -27,15 +27,11 @@ public class AdminFareTransactionReportController {
             @RequestParam LocalDate startDate,
             @RequestParam LocalDate endDate,
             @RequestParam(required = false) Long vehicleId,
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) String paymentMethod,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
         try {
             return ResponseEntity.ok(ApiResponse.success("Fare transaction report fetched.",
-                    reports.getReport(startDate, endDate, vehicleId,
-                            status == null || status.isBlank() ? null : status.trim().toUpperCase(),
-                            paymentMethod == null || paymentMethod.isBlank() ? null : paymentMethod.trim().toUpperCase(), page, size)));
+                    reports.getReport(startDate, endDate, vehicleId, page, size)));
         } catch (IllegalArgumentException invalid) {
             return ResponseEntity.badRequest().body(ApiResponse.error(invalid.getMessage()));
         }

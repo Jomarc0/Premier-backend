@@ -85,22 +85,16 @@ public class FareTransactionReportService {
                    and coalesce(c.offline_captured_at, c.created_at) < :endExclusive
                    and (:vehicleId is null or c.vehicle_id = :vehicleId)
             )
-            , filtered_rows as (
-                select * from report_rows
-                 where (:status is null or upper(status) = :status)
-                   and (:paymentMethod is null or upper(payment_method) = :paymentMethod)
-            )
             """;
 
-    public Map<String, Object> getReport(LocalDate startDate, LocalDate endDate, Long vehicleId,
-                                         String status, String paymentMethod, int page, int size) {
-        validate(startDate, endDate, vehicleId, status, paymentMethod, page, size);
-        MapSqlParameterSource params = params(startDate, endDate, vehicleId, status, paymentMethod);
-        long total = jdbc.queryForObject(ROWS + "select count(*) from filtered_rows", params, Long.class);
+    public Map<String, Object> getReport(LocalDate startDate, LocalDate endDate, Long vehicleId, int page, int size) {
+        validate(startDate, endDate, vehicleId, page, size);
+        MapSqlParameterSource params = params(startDate, endDate, vehicleId);
+        long total = jdbc.queryForObject(ROWS + "select count(*) from report_rows", params, Long.class);
         List<Map<String, Object>> rows = jdbc.queryForList(ROWS + """
                 select transaction_id, record_source, passenger_id, passenger_identifier, passenger_name, plate_number,
                        occurred_at, payment_method, fare_amount, status, direction, reference_number, reversed
-                  from filtered_rows
+                  from report_rows
                  order by occurred_at desc, record_source, transaction_id desc
                  limit :limit offset :offset
                 """, params.addValue("limit", size).addValue("offset", (long) page * size));
@@ -111,7 +105,7 @@ public class FareTransactionReportService {
         List<Map<String, Object>> grouped = jdbc.queryForList(ROWS + """
                 select status, reversed, count(*) as transaction_count,
                        sum(case when status in ('SUCCESS', 'COMPLETED') and not reversed then fare_amount else 0 end) as successful_revenue
-                  from filtered_rows group by status, reversed
+                  from report_rows group by status, reversed
                 """, params);
         long successful = 0, failed = 0, pending = 0, cancelled = 0, reversed = 0;
         java.math.BigDecimal revenue = java.math.BigDecimal.ZERO;
@@ -137,7 +131,7 @@ public class FareTransactionReportService {
         List<Map<String, Object>> paymentBreakdown = jdbc.queryForList(ROWS + """
                 select payment_method, count(*) filter (where status in ('SUCCESS', 'COMPLETED') and not reversed) as transaction_count,
                        coalesce(sum(case when status in ('SUCCESS', 'COMPLETED') and not reversed then fare_amount else 0 end), 0) as successful_amount
-                  from filtered_rows group by payment_method order by payment_method
+                  from report_rows group by payment_method order by payment_method
                 """, params);
         java.math.BigDecimal methodTotal = paymentBreakdown.stream()
                 .map(item -> (java.math.BigDecimal) item.get("successful_amount"))
@@ -147,8 +141,6 @@ public class FareTransactionReportService {
         result.put("startDate", startDate);
         result.put("endDate", endDate);
         result.put("vehicleId", vehicleId);
-        result.put("status", status);
-        result.put("paymentMethod", paymentMethod);
         result.put("page", page);
         result.put("size", size);
         result.put("totalPages", total == 0 ? 0 : (total + size - 1) / size);
@@ -159,7 +151,7 @@ public class FareTransactionReportService {
             result.put("busBreakdown", jdbc.queryForList(ROWS + """
                     select bus_id, plate_number, count(*) as transaction_count,
                            sum(case when status in ('SUCCESS', 'COMPLETED') and not reversed then fare_amount else 0 end) as successful_revenue
-                      from filtered_rows group by bus_id, plate_number order by plate_number nulls last
+                      from report_rows group by bus_id, plate_number order by plate_number nulls last
                     """, params));
         }
         return result;
@@ -175,16 +167,14 @@ public class FareTransactionReportService {
                 }).toList();
     }
 
-    private MapSqlParameterSource params(LocalDate startDate, LocalDate endDate, Long vehicleId, String status, String paymentMethod) {
+    private MapSqlParameterSource params(LocalDate startDate, LocalDate endDate, Long vehicleId) {
         return new MapSqlParameterSource()
                 .addValue("startAt", startDate.atStartOfDay())
                 .addValue("endExclusive", endDate.plusDays(1).atStartOfDay())
-                .addValue("vehicleId", vehicleId, Types.BIGINT)
-                .addValue("status", status)
-                .addValue("paymentMethod", paymentMethod);
+                .addValue("vehicleId", vehicleId, Types.BIGINT);
     }
 
-    private void validate(LocalDate startDate, LocalDate endDate, Long vehicleId, String status, String paymentMethod, int page, int size) {
+    private void validate(LocalDate startDate, LocalDate endDate, Long vehicleId, int page, int size) {
         if (startDate == null || endDate == null || endDate.isBefore(startDate)) {
             throw new IllegalArgumentException("A valid report start and end date are required.");
         }
@@ -197,7 +187,5 @@ public class FareTransactionReportService {
         if (page < 0 || size < 1 || size > 200) {
             throw new IllegalArgumentException("Invalid report page or size.");
         }
-        if (status != null && !List.of("SUCCESS", "COMPLETED", "FAILED", "EXPIRED", "PENDING", "PROCESSING", "CANCELLED").contains(status)) throw new IllegalArgumentException("Invalid transaction status filter.");
-        if (paymentMethod != null && !List.of("RFID", "NFC", "QR", "ADMIN", "PAYMONGO", "ASSISTED_CASH", "UNKNOWN").contains(paymentMethod)) throw new IllegalArgumentException("Invalid payment method filter.");
     }
 }
