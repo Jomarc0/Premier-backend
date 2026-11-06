@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /** Analytics for Premier's one fixed route and its two valid directions. */
@@ -108,7 +109,7 @@ public class AdminAnalyticsService {
         response.put("dailyBusPerformance", dailyBusPerformance(selected));
         response.put("directionAnalytics", directionAnalytics(selected));
         response.put("passengerAnalytics", passengerAnalytics(selected));
-        response.put("paymentAnalytics", paymentAnalytics(selected, window));
+        response.put("paymentAnalytics", paymentAnalytics(selected, attempts, window));
         response.put("transactionAnalytics", transactionAnalytics(selected, attempts));
         response.put("fleetAnalytics", fleetAnalytics(selected, attempts, vehicles, devices, locations));
         response.put("terminalAnalytics", terminalAnalytics(selected, attempts, devices, locations, filter));
@@ -122,9 +123,15 @@ public class AdminAnalyticsService {
     }
 
     private List<FareRecord> loadFareRecords(DateWindow window) {
-        List<FareRecord> records = transactionRepository
-                .findByCreatedAtBetweenOrderByCreatedAtDesc(window.start(), window.end()).stream()
-                .filter(this::fareTransaction).map(this::fareRecord).collect(Collectors.toCollection(ArrayList::new));
+        List<Transaction> transactions = transactionRepository.findByCreatedAtBetweenOrderByCreatedAtDesc(window.start(), window.end());
+        List<Long> transactionIds = transactions.stream().filter(this::fareTransaction).map(Transaction::getId).toList();
+        Set<Long> reversedIds = transactionIds.isEmpty() ? Set.of() : transactionRepository.findByReversalOfIdIn(transactionIds).stream()
+                .map(Transaction::getReversalOfId).filter(Objects::nonNull).collect(Collectors.toSet());
+        List<FareRecord> records = transactions.stream().filter(this::fareTransaction).map(tx -> {
+            FareRecord record = fareRecord(tx);
+            return reversedIds.contains(tx.getId()) ? new FareRecord(record.createdAt(), record.amount(), record.bus(),
+                    record.direction(), record.paymentMethod(), "REVERSED", record.passengerId(), record.reference(), record.deviceId()) : record;
+        }).collect(Collectors.toCollection(ArrayList::new));
         staffCashTransactionRepository.findByCreatedAtBetweenOrderByCreatedAtDesc(window.start(), window.end())
                 .stream().map(this::cashRecord).forEach(records::add);
         return records;
@@ -244,14 +251,19 @@ public class AdminAnalyticsService {
                 "highestPassengerVolume", peakHour == null ? 0 : peakHour.getValue());
     }
 
-    private Map<String, Object> paymentAnalytics(List<FareRecord> records, DateWindow window) {
+    private Map<String, Object> paymentAnalytics(List<FareRecord> records, List<AttemptRecord> attempts, DateWindow window) {
         List<FareRecord> successful = successful(records);
         long total = successful.size();
         BigDecimal totalRevenue = sum(successful);
         List<Map<String, Object>> methods = List.of("RFID", "NFC", "QR", "ASSISTED_CASH").stream().map(method -> {
             List<FareRecord> matches = successful.stream().filter(r -> method.equals(r.paymentMethod())).toList();
+            List<AttemptRecord> methodAttempts = attempts.stream().filter(a -> method.equals(a.paymentMethod())).toList();
+            Set<String> linkedReferences = methodAttempts.stream().map(AttemptRecord::transactionId).filter(Objects::nonNull).collect(Collectors.toSet());
+            long untrackedSuccessful = matches.stream().filter(row -> row.reference() == null || !linkedReferences.contains(row.reference())).count();
             BigDecimal revenue = sum(matches);
-            return mapOf("method", method, "name", paymentLabel(method), "count", matches.size(), "revenue", revenue,
+            return mapOf("method", method, "name", paymentLabel(method), "count", matches.size(),
+                    "transactionCount", methodAttempts.size() + untrackedSuccessful,
+                    "successfulTransactions", matches.size(), "revenue", revenue,
                     "percentage", total == 0 ? BigDecimal.ZERO : percent(matches.size(), total),
                     "revenuePercentage", totalRevenue.signum() == 0 ? BigDecimal.ZERO : percentage(revenue, totalRevenue));
         }).toList();
@@ -268,13 +280,25 @@ public class AdminAnalyticsService {
     }
 
     private Map<String, Object> transactionAnalytics(List<FareRecord> records, List<AttemptRecord> attempts) {
-        long success = attempts.isEmpty() ? successful(records).size() : attempts.stream().filter(AttemptRecord::successful).count();
+        Set<String> reversedReferences = records.stream().filter(r -> "REVERSED".equals(r.status())).map(FareRecord::reference)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        long reversedSuccessfulAttempts = attempts.stream().filter(AttemptRecord::successful)
+                .filter(a -> reversedReferences.contains(a.transactionId())).count();
+        long success = attempts.isEmpty() ? successful(records).size()
+                : attempts.stream().filter(AttemptRecord::successful).count() - reversedSuccessfulAttempts;
         long failed = attempts.stream().filter(a -> !a.successful()).count();
         long pending = records.stream().filter(r -> "PENDING".equals(r.status()) || "PROCESSING".equals(r.status())).count();
         long cancelled = records.stream().filter(r -> "CANCELLED".equals(r.status())).count();
-        long total = success + failed + pending + cancelled;
-        List<Map<String, Object>> statuses = List.of(statusRow("SUCCESSFUL", success, total), statusRow("FAILED", failed, total),
-                statusRow("PENDING", pending, total), statusRow("CANCELLED", cancelled, total));
+        long reversed = records.stream().filter(r -> "REVERSED".equals(r.status())).count();
+        long total = success + failed + pending + cancelled + reversed;
+        BigDecimal successfulAmount = sum(successful(records));
+        BigDecimal failedAmount = attempts.stream().filter(a -> !a.successful()).map(AttemptRecord::amount).filter(Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal pendingAmount = sum(records.stream().filter(r -> "PENDING".equals(r.status()) || "PROCESSING".equals(r.status())).toList());
+        BigDecimal cancelledAmount = sum(records.stream().filter(r -> "CANCELLED".equals(r.status())).toList());
+        BigDecimal reversedAmount = sum(records.stream().filter(r -> "REVERSED".equals(r.status())).toList());
+        List<Map<String, Object>> statuses = List.of(statusRow("SUCCESSFUL", success, total, successfulAmount), statusRow("FAILED", failed, total, failedAmount),
+                statusRow("PENDING", pending, total, pendingAmount), statusRow("CANCELLED", cancelled, total, cancelledAmount),
+                statusRow("REVERSED", reversed, total, reversedAmount));
         Map<String, List<AttemptRecord>> grouped = attempts.stream().filter(a -> !a.successful()).collect(Collectors.groupingBy(
                 a -> a.failureReason() == null ? "UNKNOWN" : a.failureReason(), LinkedHashMap::new, Collectors.toList()));
         List<Map<String, Object>> reasons = grouped.entrySet().stream().sorted(Map.Entry.<String, List<AttemptRecord>>comparingByValue(
@@ -452,7 +476,7 @@ public class AdminAnalyticsService {
         if (bus == null && vehicle != null) bus = clean(vehicle.getPlateNumber());
         LocalDateTime eventAt = a.getOfflineCapturedAt() == null ? a.getCreatedAt() : a.getOfflineCapturedAt();
         return new AttemptRecord(eventAt, bus, a.getTripDirection() == null ? null : a.getTripDirection().name(),
-                a.getPaymentMethod() == null ? "UNKNOWN" : a.getPaymentMethod().name(), a.getStatus() == FarePaymentAttemptStatus.SUCCESS,
+                a.getPaymentMethod() == null ? "UNKNOWN" : a.getPaymentMethod().name(), a.getAmount(), a.getStatus() == FarePaymentAttemptStatus.SUCCESS,
                 a.getFailureReason() == null ? "UNKNOWN" : a.getFailureReason().name(), a.getFailureMessage(), a.getDeviceId(),
                 a.getTransaction() == null ? String.valueOf(a.getId()) : a.getTransaction().getReferenceNumber());
     }
@@ -519,7 +543,11 @@ public class AdminAnalyticsService {
 
     private Map<String, Object> busSummary(BusAggregate b) { return mapOf("bus", b.bus(), "revenue", b.revenue(), "passengers", b.passengers(), "uniquePassengers", b.uniquePassengers()); }
     private Map<String, Object> directionSummary(DirectionAggregate d) { return mapOf("direction", d.code(), "label", d.label(), "passengers", d.passengers(), "revenue", d.revenue()); }
-    private Map<String, Object> statusRow(String status, long count, long total) { return mapOf("status", status, "name", title(status), "count", count, "percentage", total == 0 ? BigDecimal.ZERO : percent(count, total)); }
+    private Map<String, Object> statusRow(String status, long count, long total, BigDecimal amount) {
+        return mapOf("status", status, "name", title(status), "count", count,
+                "amount", amount == null ? BigDecimal.ZERO : amount,
+                "percentage", total == 0 ? BigDecimal.ZERO : percent(count, total));
+    }
 
     private Map<String, Object> options(List<Vehicle> vehicles) {
         return mapOf("buses", vehicles.stream().filter(v -> v.getPlateNumber() != null).sorted(Comparator.comparing(Vehicle::getPlateNumber, String.CASE_INSENSITIVE_ORDER))
@@ -527,7 +555,7 @@ public class AdminAnalyticsService {
                 "directions", List.of(mapOf("id", SM_TO_GRAND, "label", SM_TO_GRAND_LABEL), mapOf("id", GRAND_TO_SM, "label", GRAND_TO_SM_LABEL)),
                 "paymentMethods", List.of(mapOf("id", "RFID", "label", "RFID"), mapOf("id", "NFC", "label", "NFC"),
                         mapOf("id", "QR", "label", "QR"), mapOf("id", "ASSISTED_CASH", "label", "Assisted Cash")),
-                "transactionStatuses", List.of("SUCCESSFUL", "FAILED", "PENDING", "CANCELLED"));
+                "transactionStatuses", List.of("SUCCESSFUL", "FAILED", "PENDING", "CANCELLED", "REVERSED"));
     }
 
     private Map<String, Object> filterMap(DateWindow w, String range, AnalyticsFilter f, ZoneId zone) {
@@ -604,7 +632,7 @@ public class AdminAnalyticsService {
 
     private record DateWindow(LocalDateTime start, LocalDateTime end) {}
     private record FareRecord(LocalDateTime createdAt, BigDecimal amount, String bus, String direction, String paymentMethod, String status, Long passengerId, String reference, String deviceId) {}
-    private record AttemptRecord(LocalDateTime createdAt, String bus, String direction, String paymentMethod, boolean successful, String failureReason, String failureMessage, String deviceId, String transactionId) {}
+    private record AttemptRecord(LocalDateTime createdAt, String bus, String direction, String paymentMethod, BigDecimal amount, boolean successful, String failureReason, String failureMessage, String deviceId, String transactionId) {}
     private record BusAggregate(String bus, long passengers, long uniquePassengers, BigDecimal revenue) {}
     private record DirectionAggregate(String code, String label, long passengers, BigDecimal revenue) {}
     private record AnalyticsFilter(String busId, String direction, String paymentMethod, String status) {

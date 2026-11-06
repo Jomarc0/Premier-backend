@@ -22,6 +22,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long> 
     Page<Transaction> findByPassengerIdAndTypeOrderByCreatedAtDesc(Long passengerId, TransactionType type, Pageable pageable);
     Optional<Transaction> findByIdempotencyKey(String idempotencyKey);
     Optional<Transaction> findByReversalOfId(Long reversalOfId);
+    List<Transaction> findByReversalOfIdIn(List<Long> reversalOfIds);
     boolean existsByPassengerIdAndPaymentMethodAndStatusAndCreatedAtAfter(Long passengerId, com.premier.model.PaymentMethod method, com.premier.model.TransactionStatus status, LocalDateTime after);
     Optional<Transaction> findByOfflineTransactionId(String offlineTransactionId);
     Optional<Transaction> findByReferenceNumberAndPassengerId(String referenceNumber, Long passengerId);
